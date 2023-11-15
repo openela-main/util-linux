@@ -1,0 +1,43 @@
+From 0035da01a9acdb547c3162e3a98a2d265bcc11e7 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Thu, 10 Aug 2023 13:13:04 +0200
+Subject: swapon: (man) fix --priority description
+
+Addresses: https://bugzilla.redhat.com/show_bug.cgi?id=2188894
+Upstream: http://github.com/util-linux/util-linux/commit/85d15200e840d4fd150801e635ee5c1b7da84737
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ sys-utils/swapon.8 | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/sys-utils/swapon.8 b/sys-utils/swapon.8
+index 3c66c8188..301a232fc 100644
+--- a/sys-utils/swapon.8
++++ b/sys-utils/swapon.8
+@@ -137,18 +137,18 @@ command line options.
+ .RE
+ .TP
+ .BR \-p , " \-\-priority " \fIpriority\fP
+-Specify the priority of the swap device.
++Specify the priority of the swap device. 
+ .I priority
+-is a value between \-1 and 32767.  Higher numbers indicate
+-higher priority.  See
++is a value between 0 and 32767. Higher numbers indicate higher priority. See
+ .BR swapon (2)
+-for a full description of swap priorities.  Add
++for a full description of swap priorities. Add
+ .BI pri= value
+ to the option field of
+ .I /etc/fstab
+ for use with
+ .BR "swapon -a" .
+-When no priority is defined, it defaults to \-1.
++When no priority is defined, Linux kernel defaults to negative numbers.
++
+ .TP
+ .BR \-s , " \-\-summary"
+ Display swap usage summary by device.  Equivalent to "cat /proc/swaps".
+-- 
+2.40.1
+
