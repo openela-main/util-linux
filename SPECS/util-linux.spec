@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 11%{?dist}
+Release: 15%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -166,11 +166,29 @@ Patch43: 0043-agetty-resolve-tty-name-even-if-stdin-is-specified.patch
 # 2166653 - last(1) should be more robust with work with strings
 Patch44: 0044-last-use-snprintf-rather-than-sprintf.patch
 
-### RHEL-9.2.Z (0day)
+### RHEL-9.3.0
 #
 # 2180414 - Backport hint about systemd daemon-reload
 Patch45: 0045-include-c-add-cmp_timespec-and-cmp_stat_mtime.patch
 Patch46: 0046-mount-add-hint-about-systemctl-daemon-reload.patch
+# 2133396 - Internal testsuite for cramfs fails on s390x
+Patch47: 0047-tests-improve-cramfs-tests.patch
+# 2174748 - enable uuidd cont-clock by default
+Patch48: 0048-uuidd-improve-man-page-for-cont-clock.patch
+Patch49: 0049-uuidd-enable-cont-clock-in-service-file.patch
+# 2182169 - lscpu: backport ARM human-readable names from upstream
+Patch50: 0050-lscpu-backport-ARM-human-readable-names-from-upstrea.patch
+# 2189947 - libuuid - downport cache related patch
+Patch51: 0051-libuuid-backport-cache-handling-from-upstream.patch
+# 2203324 - zram module does not have algorithms mentioned in zramctl command
+Patch52: 0052-zramctl-add-hint-about-supported-algorithms.patch
+# 2209267 - Add additional documentation on devices being auto-mounted if a device exists within fstab.
+Patch53: 0053-fstab-add-hint-about-systemd-reload.patch
+# 2215082 - For the 'sfdisk' man page to further clarify the expected behavior and intended use of the -d option
+Patch54: 0054-sfdisk-add-hint-about-duplicate-UUIDs-when-use-dump.patch
+# 2180414 - Backport hint about systemd daemon-reload
+Patch55: 0055-tests-don-t-write-mount-hint-to-terminal.patch
+
 
 %description
 The util-linux package contains a large variety of low-level system
@@ -1005,6 +1023,24 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Thu Aug 24 2023 Karel Zak <kzak@redhat.com> 2.37.4-15
+- fix typo in patch for #2133396
+
+* Wed Aug 23 2023 Karel Zak <kzak@redhat.com> 2.37.4-14
+- improve fix #2133396 - Internal testsuite for cramfs fails on s390x
+
+* Thu Aug 10 2023 Karel Zak <kzak@redhat.com> 2.37.4-13
+- improve fix #2180414 - Backport hint about systemd daemon-reload
+
+* Wed Aug 09 2023 Karel Zak <kzak@redhat.com> 2.37.4-12
+- fix #2133396 - Internal testsuite for cramfs fails on s390x
+- fix #2174748 - enable uuidd cont-clock by default
+- fix #2182169 - lscpu: backport ARM human-readable names from upstream
+- fix #2189947 - libuuid - downport cache related patch
+- fix #2203324 - zram module does not have algorithms mentioned in zramctl command
+- fix #2209267 - Add additional documentation on devices being auto-mounted if a device exists within fstab.
+- fix #2215082 - For the 'sfdisk' man page to further clarify the expected behavior and intended use of the -d option
+
 * Tue Mar 28 2023 Karel Zak <kzak@redhat.com> 2.37.4-11
 - fix #2180414 - Backport hint about systemd daemon-reload
 
