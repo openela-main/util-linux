@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 42%{?dist}
+Release: 43%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -283,6 +283,14 @@ Patch92: 0092-last-use-full-size-of-the-username.patch
 # 2180413 - Backport hint about systemd daemon-reload
 Patch93: 0093-include-c-add-cmp_timespec-and-cmp_stat_mtime.patch
 Patch94: 0094-mount-add-hint-about-systemctl-daemon-reload.patch
+# 2117355 - Add additional documentation for fstab.
+Patch95: 0095-fstab-add-hint-about-systemd-reload.patch
+# 2184728 - libuuid - downport cache related patch
+Patch96: 0096-libuuid-backport-cache-handling-from-upstream.patch
+# 2188894 - The swapon man page of -p(priority) option shows incorrect.
+Patch97: 0097-swapon-man-fix-priority-description.patch
+# 2227097 - wall(1) fails when trying to use seat0
+Patch98: 0098-wall-do-not-error-for-ttys-that-do-not-exist.patch
 
 
 %description
@@ -1132,6 +1140,12 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Thu Aug 10 2023 Karel Zak <kzak@redhat.com> 2.32.1-43
+- fix #2117355 - Add additional documentation for fstab
+- fix #2184728 - libuuid - downport cache related patch
+- fix #2188894 - The swapon man page of -p(priority) option shows incorrect.
+- fix #2227097 - wall(1) fail when trying to use seat0
+
 * Thu Mar 30 2023 Karel Zak <kzak@redhat.com> 2.32.1-42
 - fix #2180413 - Backport hint about systemd daemon-reload
 
