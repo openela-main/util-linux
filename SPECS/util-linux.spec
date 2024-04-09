@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 43%{?dist}
+Release: 44%{?dist}.1
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -291,6 +291,11 @@ Patch96: 0096-libuuid-backport-cache-handling-from-upstream.patch
 Patch97: 0097-swapon-man-fix-priority-description.patch
 # 2227097 - wall(1) fails when trying to use seat0
 Patch98: 0098-wall-do-not-error-for-ttys-that-do-not-exist.patch
+
+### RHEL-8.9.Z
+###
+# RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
+Patch99: 0099-lscpu-avoid-EBUSY-on-cpuinfo_max_freq.patch
 
 
 %description
@@ -1140,6 +1145,9 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Wed Jan 10 2024 Karel Zak <kzak@redhat.com> 2.32.1-44.el8_9.1
+- fix RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
+
 * Thu Aug 10 2023 Karel Zak <kzak@redhat.com> 2.32.1-43
 - fix #2117355 - Add additional documentation for fstab
 - fix #2184728 - libuuid - downport cache related patch

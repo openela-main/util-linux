@@ -1,0 +1,108 @@
+From e561e4740d8dd5419e5fb23ab186ae43fd572736 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Wed, 10 Jan 2024 12:08:17 +0100
+Subject: lscpu: avoid EBUSY on cpuinfo_max_freq
+
+Addresses: https://issues.redhat.com/browse/RHEL-13741
+---
+ include/path.h    |  4 ++++
+ lib/path.c        | 20 ++++++++++++++++++++
+ sys-utils/lscpu.c | 18 ++++++++++++------
+ 3 files changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/include/path.h b/include/path.h
+index 4be01095c..965bdd047 100644
+--- a/include/path.h
++++ b/include/path.h
+@@ -19,8 +19,12 @@ extern void path_read_str(char *result, size_t len, const char *path, ...)
+ 			__attribute__ ((__format__ (__printf__, 3, 4)));
+ extern int path_write_str(const char *str, const char *path, ...)
+ 			 __attribute__ ((__format__ (__printf__, 2, 3)));
++
++extern int __path_read_s32(int *result, const char *path, ...)
++			__attribute__ ((__format__ (__printf__, 2, 3)));
+ extern int path_read_s32(const char *path, ...)
+ 			__attribute__ ((__format__ (__printf__, 1, 2)));
++
+ extern uint64_t path_read_u64(const char *path, ...)
+ 			__attribute__ ((__format__ (__printf__, 1, 2)));
+ 
+diff --git a/lib/path.c b/lib/path.c
+index e8cfa557a..7217c9089 100644
+--- a/lib/path.c
++++ b/lib/path.c
+@@ -145,6 +145,26 @@ path_read_str(char *result, size_t len, const char *path, ...)
+ 		result[len - 1] = '\0';
+ }
+ 
++/* like path_read_s32() but do not print any error message */
++int __path_read_s32(int *result, const char *path, ...)
++{
++	FILE *f;
++	va_list ap;
++	int rc;
++
++	va_start(ap, path);
++	f = path_vfopen("r" UL_CLOEXECSTR, 0, path, ap);
++	va_end(ap);
++
++	if (!f)
++		return -1;
++
++	rc = fscanf(f, "%d", result);
++	fclose(f);
++
++	return rc == 1 ? 0 : -1;
++}
++
+ int
+ path_read_s32(const char *path, ...)
+ {
+diff --git a/sys-utils/lscpu.c b/sys-utils/lscpu.c
+index 01f8fba35..ed5543901 100644
+--- a/sys-utils/lscpu.c
++++ b/sys-utils/lscpu.c
+@@ -1176,28 +1176,34 @@ static void
+ read_max_mhz(struct lscpu_desc *desc, int idx)
+ {
+ 	int num = real_cpu_num(desc, idx);
++	int mhz = 0;
+ 
+ 	if (!path_exist(_PATH_SYS_CPU "/cpu%d/cpufreq/cpuinfo_max_freq", num))
+ 		return;
++	if (__path_read_s32(&mhz, _PATH_SYS_CPU
++				"/cpu%d/cpufreq/cpuinfo_max_freq", num) != 0)
++		return;
++
+ 	if (!desc->maxmhz)
+ 		desc->maxmhz = xcalloc(desc->ncpuspos, sizeof(char *));
+-	xasprintf(&(desc->maxmhz[idx]), "%.4f",
+-		  (float)path_read_s32(_PATH_SYS_CPU
+-				       "/cpu%d/cpufreq/cpuinfo_max_freq", num) / 1000);
++	xasprintf(&(desc->maxmhz[idx]), "%.4f", (float) mhz / 1000);
+ }
+ 
+ static void
+ read_min_mhz(struct lscpu_desc *desc, int idx)
+ {
+ 	int num = real_cpu_num(desc, idx);
++	int mhz = 0;
+ 
+ 	if (!path_exist(_PATH_SYS_CPU "/cpu%d/cpufreq/cpuinfo_min_freq", num))
+ 		return;
++	if (__path_read_s32(&mhz, _PATH_SYS_CPU
++				"/cpu%d/cpufreq/cpuinfo_min_freq", num) != 0)
++		return;
++
+ 	if (!desc->minmhz)
+ 		desc->minmhz = xcalloc(desc->ncpuspos, sizeof(char *));
+-	xasprintf(&(desc->minmhz[idx]), "%.4f",
+-		  (float)path_read_s32(_PATH_SYS_CPU
+-				       "/cpu%d/cpufreq/cpuinfo_min_freq", num) / 1000);
++	xasprintf(&(desc->minmhz[idx]), "%.4f", (float) mhz / 1000);
+ }
+ 
+ static int
+-- 
+2.43.0
+
