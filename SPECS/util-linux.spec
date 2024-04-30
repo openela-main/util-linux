@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 15%{?dist}
+Release: 18%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -188,6 +188,36 @@ Patch53: 0053-fstab-add-hint-about-systemd-reload.patch
 Patch54: 0054-sfdisk-add-hint-about-duplicate-UUIDs-when-use-dump.patch
 # 2180414 - Backport hint about systemd daemon-reload
 Patch55: 0055-tests-don-t-write-mount-hint-to-terminal.patch
+
+### RHEL-9.4.0
+#
+# RHEL-16048 - uninitialized memory in SCM_CREDENTIALS in logger(1)
+Patch56: 0056-logger-initialize-socket-credentials-contol-union.patch
+# RHEL-21257 - logger sending process start time not current time with log messages
+Patch57: 0057-logger-always-update-header-when-read-from-stdin.patch
+# RHEL-16071 - issues in libblkid
+Patch58: 0058-libblkid-hfs-fix-label-use-fuzzing.patch
+Patch59: 0059-libblkid-bsd-fix-buffer-pointer-use-fuzzing.patch
+Patch60: 0060-libblkid-mac-make-sure-block-size-is-large-enough-fu.patch
+Patch61: 0061-libblkid-probe-fix-size-and-offset-overflows-fuzzing.patch
+# RHEL-12783 - lscpu -e doesn't show the current real frequency value
+Patch62: 0062-lscpu-add-SCALMHZ-and-CPU-scaling-MHz.patch
+Patch63: 0063-lscpu-read-MHZ-from-sys-.-cpufreq-scaling_cur_freq.patch
+Patch64: 0064-lscpu-use-MHZ-as-number-to-be-locale-sensitive.patch
+Patch65: 0065-lscpu-use-locale-independent-strtod-when-read-from-k.patch
+# RHEL-14612 - Userspace mount options are not preserved for NFS
+Patch66: 0066-libmount-add-private-mnt_optstr_get_missing.patch
+Patch67: 0067-libmount-add-missing-utab-options-after-helper-call.patch
+Patch68: 0068-libmount-add-mnt_context_within_helper-wrapper.patch
+Patch69: 0069-libmount-introduce-run-mount-utab.event.patch
+Patch70: 0070-libmount-don-t-assume-errno-after-failed-asprintf.patch
+Patch71: 0071-libmount-introduce-reference-counting-for-libmnt_loc.patch
+Patch72: 0072-libmount-cleanup-locking-in-table-update-code.patch
+Patch73: 0073-libmount-add-utab.act-file.patch
+Patch74: 0074-libmount-ignore-unwanted-kernel-events-in-monitor.patch
+Patch75: 0075-libmount-improve-act-file-close.patch
+# RHEL-12783 - lscpu: update tests, follow max freq for scaling
+Patch76: 0076-lscpu-update-tests-follow-max-freq-for-scaling.patch
 
 
 %description
@@ -1023,6 +1053,19 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Thu Feb 08 2024 Karel Zak <kzak@redhat.com> 2.37.4-18
+- lscpu: another tests update (RHEL-12783)
+
+* Thu Feb 08 2024 Karel Zak <kzak@redhat.com> 2.37.4-17
+- lscpu: update tests, follow max freq for scaling (RHEL-12783)
+
+* Wed Feb 07 2024 Karel Zak <kzak@redhat.com> 2.37.4-16
+- fix RHEL-16048 - uninitialized memory in SCM_CREDENTIALS in logger(1)
+- fix RHEL-21257 - logger sending process start time not current time with log messages
+- fix RHEL-16071 - issues in libblkid
+- fix RHEL-12783 - lscpu -e doesn't show the current real frequency value
+- fix RHEL-14612 - Userspace mount options are not preserved for NFS
+
 * Thu Aug 24 2023 Karel Zak <kzak@redhat.com> 2.37.4-15
 - fix typo in patch for #2133396
 
