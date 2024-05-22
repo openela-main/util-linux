@@ -1,0 +1,89 @@
+From db254673510a49c1ad2ac154f72687bc5ff3ece3 Mon Sep 17 00:00:00 2001
+From: Sami Kerola <kerolasa@iki.fi>
+Date: Sat, 5 Jan 2019 21:32:23 +0000
+Subject: timeutils: match today day and this year correctly
+
+Assumption all years since 1970 have been exactly 365 days long has it's
+problems when leap years happen.  Lets use struct tm fields that are
+provided by localtime_r(), making year and day to be correctly compared even
+when it's late new years eve somewhere else than UTC-0.
+
+Addresses: https://issues.redhat.com/browse/RHEL-6274
+Upstream: http://github.com/util-linux/util-linux/commit/d393c00c6cd57ef7f122f4e1730b3c410b6084cb
+Signed-off-by: Sami Kerola <kerolasa@iki.fi>
+---
+ include/timeutils.h |  3 ---
+ lib/timeutils.c     | 27 +++++++++++++++------------
+ 2 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/include/timeutils.h b/include/timeutils.h
+index f1540a183..eec840085 100644
+--- a/include/timeutils.h
++++ b/include/timeutils.h
+@@ -83,9 +83,6 @@ int strtime_iso(const time_t *t, int flags, char *buf, size_t bufsz);
+ 
+ #define UL_SHORTTIME_THISYEAR_HHMM (1 << 1)
+ 
+-int time_is_today(const time_t *t, struct timeval *now);
+-int time_is_thisyear(const time_t *t, struct timeval *now);
+-
+ int strtime_short(const time_t *t, struct timeval *now, int flags, char *buf, size_t bufsz);
+ 
+ #ifndef HAVE_TIMEGM
+diff --git a/lib/timeutils.c b/lib/timeutils.c
+index 9c286aebc..d403ced90 100644
+--- a/lib/timeutils.c
++++ b/lib/timeutils.c
+@@ -503,34 +503,37 @@ int strtime_iso(const time_t *t, int flags, char *buf, size_t bufsz)
+ }
+ 
+ /* relative time functions */
+-int time_is_today(const time_t *t, struct timeval *now)
++static inline int time_is_thisyear(struct tm const *const tm,
++				   struct tm const *const tmnow)
+ {
+-	if (now->tv_sec == 0)
+-		gettimeofday(now, NULL);
+-	return *t / (3600 * 24) == now->tv_sec / (3600 * 24);
++	return tm->tm_year == tmnow->tm_year;
+ }
+ 
+-int time_is_thisyear(const time_t *t, struct timeval *now)
++static inline int time_is_today(struct tm const *const tm,
++				struct tm const *const tmnow)
+ {
+-	if (now->tv_sec == 0)
+-		gettimeofday(now, NULL);
+-	return *t / (3600 * 24 * 365) == now->tv_sec / (3600 * 24 * 365);
++	return (tm->tm_yday == tmnow->tm_yday &&
++		time_is_thisyear(tm, tmnow));
+ }
+ 
+ int strtime_short(const time_t *t, struct timeval *now, int flags, char *buf, size_t bufsz)
+ {
+-        struct tm tm;
++	struct tm tm, tmnow;
+ 	int rc = 0;
+ 
+-        localtime_r(t, &tm);
++	if (now->tv_sec == 0)
++		gettimeofday(now, NULL);
++
++	localtime_r(t, &tm);
++	localtime_r(&now->tv_sec, &tmnow);
+ 
+-	if (time_is_today(t, now)) {
++	if (time_is_today(&tm, &tmnow)) {
+ 		rc = snprintf(buf, bufsz, "%02d:%02d", tm.tm_hour, tm.tm_min);
+ 		if (rc < 0 || (size_t) rc > bufsz)
+ 			return -1;
+ 		rc = 1;
+ 
+-	} else if (time_is_thisyear(t, now)) {
++	} else if (time_is_thisyear(&tm, &tmnow)) {
+ 		if (flags & UL_SHORTTIME_THISYEAR_HHMM)
+ 			rc = strftime(buf, bufsz, "%b%d/%H:%M", &tm);
+ 		else
+-- 
+2.43.0
+

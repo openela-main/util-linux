@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 44%{?dist}.1
+Release: 46%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -292,10 +292,19 @@ Patch97: 0097-swapon-man-fix-priority-description.patch
 # 2227097 - wall(1) fails when trying to use seat0
 Patch98: 0098-wall-do-not-error-for-ttys-that-do-not-exist.patch
 
-### RHEL-8.9.Z
+### RHEL-8.10
 ###
 # RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
 Patch99: 0099-lscpu-avoid-EBUSY-on-cpuinfo_max_freq.patch
+# RHEL-18451 - logger: initialize socket credentials control union
+Patch100: 0100-logger-initialize-socket-credentials-control-union.patch
+# RHEL-16070 - util-linux: issues in libblkid
+Patch101: 0101-libblkid-hfs-fix-label-use-fuzzing.patch
+Patch102: 0102-libblkid-bsd-fix-buffer-pointer-use-fuzzing.patch
+Patch103: 0103-libblkid-probe-fix-size-and-offset-overflows-fuzzing.patch
+# RHEL-6274 - lslogins incorrect account expiration field
+Patch104: 0104-timeutils-match-today-day-and-this-year-correctly.patch
+
 
 
 %description
@@ -1145,7 +1154,16 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
-* Wed Jan 10 2024 Karel Zak <kzak@redhat.com> 2.32.1-44.el8_9.1
+* Thu Feb 08 2024 Karel Zak <kzak@redhat.com> 2.32.1-46
+- fix RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
+- fix RHEL-18451 - logger: initialize socket credentials control union
+- fix RHEL-16070 - util-linux: issues in libblkid
+- fix RHEL-6274 - lslogins incorrect account expiration field
+
+* Tue Jan 30 2024 Karel Zak <kzak@redhat.com> 2.32.1-45
+- increment release number
+
+* Wed Jan 10 2024 Karel Zak <kzak@redhat.com> 2.32.1-44
 - fix RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
 
 * Thu Aug 10 2023 Karel Zak <kzak@redhat.com> 2.32.1-43
