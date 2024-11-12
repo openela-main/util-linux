@@ -1,0 +1,119 @@
+From a4348a44319a126b75c6a7b4ac82a4efb4d63466 Mon Sep 17 00:00:00 2001
+From: Milan Broz <gmazyland@gmail.com>
+Date: Fri, 16 Feb 2024 16:44:12 +0100
+Subject: libblkid: Check offset in LUKS2 header
+
+LUKS2 binary header contains offset field that describes where
+the header should be located.
+
+If this offset is not correct, blkid should tread this header
+as invalid.
+
+This patch fixes problem when both swap and LUKS headers are present
+(LUKS header was swapped out) and detected LUKS header is at a wrong
+offset.  As LUKS has higher priority, it confuses detection.
+
+[kzak@redhat.com (RHEL-9): -removed ID_FS_* from expected test output;
+                            not supported by RHEL yet]
+
+Signed-off-by: Milan Broz <gmazyland@gmail.com>
+Addresses: https://issues.redhat.com/browse/RHEL-25265
+Upstream: http://github.com/util-linux/util-linux/commit/e49de00f4a22f91ec5af08d97e30a198cd64e00d)
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ libblkid/src/superblocks/luks.c           |  20 +++++++++++++++++---
+ tests/expected/blkid/low-probe-swap-luks  |   5 +++++
+ tests/ts/blkid/images-fs/swap-luks.img.xz | Bin 0 -> 388 bytes
+ 3 files changed, 22 insertions(+), 3 deletions(-)
+ create mode 100644 tests/expected/blkid/low-probe-swap-luks
+ create mode 100644 tests/ts/blkid/images-fs/swap-luks.img.xz
+
+diff --git a/libblkid/src/superblocks/luks.c b/libblkid/src/superblocks/luks.c
+index 0230b3492..4623c98fc 100644
+--- a/libblkid/src/superblocks/luks.c
++++ b/libblkid/src/superblocks/luks.c
+@@ -1,6 +1,6 @@
+ /*
+  * Copyright (C) 2008 Karel Zak <kzak@redhat.com>
+- * Copyright (C) 2018 Milan Broz <gmazyland@gmail.com>
++ * Copyright (C) 2018-2024 Milan Broz <gmazyland@gmail.com>
+  *
+  * Inspired by libvolume_id by
+  *     Kay Sievers <kay.sievers@vrfy.org>
+@@ -15,6 +15,7 @@
+ #include <errno.h>
+ #include <ctype.h>
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ #include "superblocks.h"
+ 
+@@ -96,6 +97,19 @@ static int luks_attributes(blkid_probe pr, struct luks2_phdr *header, uint64_t o
+ 	return BLKID_PROBE_OK;
+ }
+ 
++static bool luks_valid(struct luks2_phdr *header, const char *magic, uint64_t offset)
++{
++	if (memcmp(header->magic, magic, LUKS_MAGIC_L))
++		return false;
++
++	/* LUKS2 header is not at expected offset */
++	if (be16_to_cpu(header->version) == 2 &&
++	    be64_to_cpu(header->hdr_offset) != offset)
++		return false;
++
++	return true;
++}
++
+ static int probe_luks(blkid_probe pr, const struct blkid_idmag *mag __attribute__((__unused__)))
+ {
+ 	struct luks2_phdr *header;
+@@ -105,7 +119,7 @@ static int probe_luks(blkid_probe pr, const struct blkid_idmag *mag __attribute_
+ 	if (!header)
+ 		return errno ? -errno : BLKID_PROBE_NONE;
+ 
+-	if (!memcmp(header->magic, LUKS_MAGIC, LUKS_MAGIC_L)) {
++	if (luks_valid(header, LUKS_MAGIC, 0)) {
+ 		/* LUKS primary header was found. */
+ 		return luks_attributes(pr, header, 0);
+ 	}
+@@ -118,7 +132,7 @@ static int probe_luks(blkid_probe pr, const struct blkid_idmag *mag __attribute_
+ 		if (!header)
+ 			return errno ? -errno : BLKID_PROBE_NONE;
+ 
+-		if (!memcmp(header->magic, LUKS_MAGIC_2, LUKS_MAGIC_L))
++		if (luks_valid(header, LUKS_MAGIC_2, secondary_offsets[i]))
+ 			return luks_attributes(pr, header, secondary_offsets[i]);
+ 	}
+ 
+diff --git a/tests/expected/blkid/low-probe-swap-luks b/tests/expected/blkid/low-probe-swap-luks
+new file mode 100644
+index 000000000..c1573b033
+--- /dev/null
++++ b/tests/expected/blkid/low-probe-swap-luks
+@@ -0,0 +1,5 @@
++ID_FS_TYPE=swap
++ID_FS_USAGE=other
++ID_FS_UUID=0eb5f96f-188d-4d61-9e9c-d89ce8206846
++ID_FS_UUID_ENC=0eb5f96f-188d-4d61-9e9c-d89ce8206846
++ID_FS_VERSION=1
+diff --git a/tests/ts/blkid/images-fs/swap-luks.img.xz b/tests/ts/blkid/images-fs/swap-luks.img.xz
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b5cb65a38e2b0f156d0e7c54f7e302e8be5d886
+GIT binary patch
+literal 388
+zcmV-~0ek-aH+ooF000E$*0e?f03iVu0001VFXf}-|Nj9)T>t=Y{r~@?w|_@fn&#B$
+z;sb3rhc#v^S33qtu8bp#ELS`>#Df}I`JsnWWeI+83*NgdLzb2it-UN0L+%FFBw~Dh
+z(hiYp26QOeLGz0*mT~CRG8teHg8cC)l^sS2)UT*j#1I|~nxWP(f_5R?;mz%uu}S(<
+zrD9Ia@w4_^-(z=o9wHb+YSvk<oI&w@s6I~k*PwQHjgz+W3MF+ulaM+(uofSk=z=bO
+z|MsXkp^&{3PVv*w*rUt!39W^T2Ln^nC0QN@O6*A{GjrH^$sJ$=+TLNx;Gna#(QDh)
+zCozO&&lkp=T-0Hg$hXm46nm<HEPKT(5jbnI7C2@0K3!c@LV<IKQOZmDSE5<^Ot}4m
+z<NGy$L2(vZUVn%O<2yw;KhxsF*Qps}+Kfz6r*vOXyG#FCCaiJ{7LupE^%UAu00010
+iLb{MciS|kW0p9|EfDiz!mQx(D#Ao{g000001X)^?RI`@=
+
+literal 0
+HcmV?d00001
+
+-- 
+2.46.0
+

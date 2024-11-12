@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 18%{?dist}
+Release: 20%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -218,6 +218,16 @@ Patch74: 0074-libmount-ignore-unwanted-kernel-events-in-monitor.patch
 Patch75: 0075-libmount-improve-act-file-close.patch
 # RHEL-12783 - lscpu: update tests, follow max freq for scaling
 Patch76: 0076-lscpu-update-tests-follow-max-freq-for-scaling.patch
+
+### RHEL-9.5
+#
+# RHEL-34165 - lsipc: fix semaphore USED counter
+Patch77: 0077-lsipc-fix-semaphore-USED-counter.patch
+# RHEL-25265 - libblkid: Check offset in LUKS2 header
+Patch78: 0078-libblkid-Check-offset-in-LUKS2-header.patch
+# RHEL-25559 - more: fix poll() use
+Patch79: 0079-more-fix-poll-use.patch
+Patch80: 0080-more-make-sure-we-have-data-on-stderr.patch
 
 
 %description
@@ -1053,6 +1063,14 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Thu Aug 22 2024 Karel Zak <kzak@redhat.com> 2.37.4-20
+- fix RHEL-25559 - more: make sure we have data on stderr
+
+* Tue Aug 20 2024 Karel Zak <kzak@redhat.com> 2.37.4-19
+- fix RHEL-34165 - lsipc: fix semaphore USED counter
+- fix RHEL-25265 - libblkid: Check offset in LUKS2 header
+- fix RHEL-25559 - more: fix poll() use
+
 * Thu Feb 08 2024 Karel Zak <kzak@redhat.com> 2.37.4-18
 - lscpu: another tests update (RHEL-12783)
 

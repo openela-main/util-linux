@@ -1,0 +1,65 @@
+From 7e980efc7103d100fdf889a68b9d7c5e0bb7bf92 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Tue, 26 Mar 2024 12:45:24 +0100
+Subject: lsipc: fix semaphore USED counter
+
+The code incorrectly counts only with the first item in the linked
+list (due to a typo). It seems rather fragile to use "semds" and
+"semdsp" as variable names in the same code ...
+
+ # lsipc -gs
+
+Old:
+
+ KEY ID PERMS OWNER NSEMS RESOURCE DESCRIPTION                                LIMIT USED  USE%
+                          SEMMNI   Number of semaphore identifiers            32000    3 0.01%
+                          SEMMNS   Total number of semaphores            1024000000  369 0.00%
+                          SEMMSL   Max semaphores per semaphore set.          32000    -     -
+                          SEMOPM   Max number of operations per semop(2)        500    -     -
+                          SEMVMX   Semaphore max value                        32767    -     -
+
+Fixed:
+
+ KEY ID PERMS OWNER NSEMS RESOURCE DESCRIPTION                                LIMIT USED  USE%
+                          SEMMNI   Number of semaphore identifiers            32000    3 0.01%
+                          SEMMNS   Total number of semaphores            1024000000  156 0.00%
+                          SEMMSL   Max semaphores per semaphore set.          32000    -     -
+                          SEMOPM   Max number of operations per semop(2)        500    -     -
+                          SEMVMX   Semaphore max value                        32767    -     -
+
+Addresses: https://issues.redhat.com/browse/RHEL-34165
+Upstream: http://github.com/util-linux/util-linux/commit/fa45a6e516065f489b1cfb924ec3fc06960e0839
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ sys-utils/lsipc.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/sys-utils/lsipc.c b/sys-utils/lsipc.c
+index aa1dd4540..3e2cd639d 100644
+--- a/sys-utils/lsipc.c
++++ b/sys-utils/lsipc.c
+@@ -712,16 +712,18 @@ static void do_sem(int id, struct lsipc_control *ctl, struct libscols_table *tb)
+ 
+ static void do_sem_global(struct lsipc_control *ctl, struct libscols_table *tb)
+ {
+-	struct sem_data *semds, *semdsp;
++	struct sem_data *semds;
+ 	struct ipc_limits lim;
+ 	int nsems = 0, nsets = 0;
+ 
+ 	ipc_sem_get_limits(&lim);
+ 
+ 	if (ipc_sem_get_info(-1, &semds) > 0) {
+-		for (semdsp = semds; semdsp->next != NULL; semdsp = semdsp->next) {
++		struct sem_data *p;
++
++		for (p = semds; p->next != NULL; p = p->next) {
+ 			++nsets;
+-			nsems += semds->sem_nsems;
++			nsems += p->sem_nsems;
+ 		}
+ 		ipc_sem_free_info(semds);
+ 	}
+-- 
+2.46.0
+

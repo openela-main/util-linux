@@ -1,0 +1,96 @@
+From 04e37ba1b352de91ef28f9996ca3482987a31c3a Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Thu, 22 Aug 2024 08:56:52 +0200
+Subject: more: make sure we have data on stderr
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+more(1) uses more_poll() to monitor data on stdin, stderr, and
+signals. It is used before read_command(), but this function only
+reads from stderr. Therefore, if any other non-stderr event occurs,
+this function will wait on read(). In this case, more(1) will not
+react to signals anymore. We need to ensure that more(1) only waits in
+more_poll().
+
+Try
+
+ for x in {1..1000}; do echo "line $x"; done | more
+
+to reproduce.
+
+Addresses: https://issues.redhat.com/browse/RHEL-25559
+Reported-by: Radka Skvarilova <rskvaril@redhat.com>
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ text-utils/more.c | 18 +++++++++++++-----
+ 1 file changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/text-utils/more.c b/text-utils/more.c
+index a4fbe0220..c5a060424 100644
+--- a/text-utils/more.c
++++ b/text-utils/more.c
+@@ -1343,7 +1343,7 @@ static void read_line(struct more_control *ctl)
+ }
+ 
+ /* returns: 0 timeout or nothing; <0 error, >0 success */
+-static int more_poll(struct more_control *ctl, int timeout)
++static int more_poll(struct more_control *ctl, int timeout, int *stderr_active)
+ {
+ 	enum {
+ 		POLLFD_SIGNAL = 0,
+@@ -1357,6 +1357,9 @@ static int more_poll(struct more_control *ctl, int timeout)
+ 	};
+ 	int has_data = 0;
+ 
++	if (stderr_active)
++		*stderr_active = 0;
++
+ 	while (!has_data) {
+ 		int rc;
+ 
+@@ -1423,8 +1426,11 @@ static int more_poll(struct more_control *ctl, int timeout)
+ 		}
+ 
+ 		/* event on stderr (we reads user commands from stderr!) */
+-		if (pfd[POLLFD_STDERR].revents)
++		if (pfd[POLLFD_STDERR].revents) {
+ 			has_data++;
++			if (stderr_active)
++				*stderr_active = 1;
++		}
+ 	}
+ 
+ 	return has_data;
+@@ -1495,7 +1501,7 @@ static void search(struct more_control *ctl, char buf[], int n)
+ 			}
+ 			break;
+ 		}
+-		more_poll(ctl, 0);
++		more_poll(ctl, 0, NULL);
+ 	}
+ 	/* Move ctrl+c signal handling back to more_key_command(). */
+ 	signal(SIGINT, SIG_DFL);
+@@ -1649,7 +1655,7 @@ static int skip_forwards(struct more_control *ctl, int nlines, cc_t comchar)
+ static int more_key_command(struct more_control *ctl, char *filename)
+ {
+ 	int retval = 0;
+-	int done = 0, search_again = 0;
++	int done = 0, search_again = 0, stderr_active = 0;
+ 	char cmdbuf[INIT_BUF];
+ 	struct number_command cmd;
+ 
+@@ -1659,7 +1665,9 @@ static int more_key_command(struct more_control *ctl, char *filename)
+ 		ctl->report_errors = 0;
+ 	ctl->search_called = 0;
+ 	for (;;) {
+-		if (more_poll(ctl, -1) <= 0)
++		if (more_poll(ctl, -1, &stderr_active) <= 0)
++			continue;
++		if (stderr_active == 0)
+ 			continue;
+ 		cmd = read_command(ctl);
+ 		if (cmd.key == more_kc_unknown_command)
+-- 
+2.46.0
+
