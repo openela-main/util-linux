@@ -1,0 +1,35 @@
+From e851e4519f7ef21690cb300b4c229527502255a3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Thomas=20Wei=C3=9Fschuh?= <thomas@t-8ch.de>
+Date: Fri, 20 Jan 2023 02:43:34 +0000
+Subject: lib/timeutils: parse_timestamp: fix second parsing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Upstream: http://github.com/util-linux/util-linux/commit/2abb8394fa89303b21003bd8252e52751c07f08c
+Addresses: https://issues.redhat.com/browse/RHEL-56354
+Signed-off-by: Thomas Weißschuh <thomas@t-8ch.de>
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ lib/timeutils.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/lib/timeutils.c b/lib/timeutils.c
+index 2e28ada8b..7ce727276 100644
+--- a/lib/timeutils.c
++++ b/lib/timeutils.c
+@@ -320,10 +320,8 @@ int parse_timestamp(const char *t, usec_t *usec)
+ 
+ 	tm = copy;
+ 	k = strptime(t, "%Y%m%d%H%M%S", &tm);
+-	if (k && *k == 0) {
+-		tm.tm_sec = 0;
++	if (k && *k == 0)
+ 		goto finish;
+-	}
+ 
+ 	return -EINVAL;
+ 
+-- 
+2.47.1
+

@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 20%{?dist}
+Release: 21%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -228,6 +228,13 @@ Patch78: 0078-libblkid-Check-offset-in-LUKS2-header.patch
 # RHEL-25559 - more: fix poll() use
 Patch79: 0079-more-fix-poll-use.patch
 Patch80: 0080-more-make-sure-we-have-data-on-stderr.patch
+
+### RHEL-9.6
+#
+# RHEL-56354 - lib/timeutils: parse_timestamp: fix second parsing
+Patch81: 0081-lib-timeutils-parse_timestamp-fix-second-parsing.patch
+# RHEL-56983 - sulogin: fix POSIX locale use
+Patch82: 0082-sulogin-fix-POSIX-locale-use.patch
 
 
 %description
@@ -1063,6 +1070,10 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Thu Jan 16 2025 Karel Zak <kzak@redhat.com> 2.37.4-21
+- fix RHEL-56354 - lib/timeutils: parse_timestamp: fix second parsing
+- fix RHEL-56983 - sulogin: fix POSIX locale use
+
 * Thu Aug 22 2024 Karel Zak <kzak@redhat.com> 2.37.4-20
 - fix RHEL-25559 - more: make sure we have data on stderr
 

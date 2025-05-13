@@ -1,0 +1,49 @@
+From cc3d82a17b5ef7e55d67c2b9b369e7de97a20f43 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Thu, 16 Jan 2025 13:14:43 +0100
+Subject: sulogin: fix POSIX locale use
+
+In some cases, sulogin can set LC_CTYPE="POSIX" while retaining the
+original LC_MESSAGES. In this scenario, the gettext() function may not
+work as intended and sulogin returns "???" (for example for
+ja_JP.UTF-8). GNU gettext FAQ:
+
+ This symptom occurs when the LC_CTYPE facet of the locale is not set;
+ then gettext() doesn't know which character set to use, and converts
+ all messages to ASCII, as far as possible.
+
+Addresses: https://issues.redhat.com/browse/RHEL-56983
+Addresses: https://github.com/util-linux/util-linux/issues/2185
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ login-utils/sulogin.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/login-utils/sulogin.c b/login-utils/sulogin.c
+index 4d48943ad..89e369b5c 100644
+--- a/login-utils/sulogin.c
++++ b/login-utils/sulogin.c
+@@ -185,6 +185,7 @@ static void tcinit(struct console *con)
+ 		}
+ 
+ 		setlocale(LC_CTYPE, "POSIX");
++		setlocale(LC_MESSAGES, "POSIX");
+ 		goto setattr;
+ 	}
+ #if defined(IUTF8) && defined(KDGKBMODE)
+@@ -199,10 +200,12 @@ static void tcinit(struct console *con)
+ 	case K_XLATE:
+ 	default:
+ 		setlocale(LC_CTYPE, "POSIX");
++		setlocale(LC_MESSAGES, "POSIX");
+ 		break;
+ 	}
+ #else
+ 	setlocale(LC_CTYPE, "POSIX");
++	setlocale(LC_MESSAGES, "POSIX");
+ #endif
+ 	reset_virtual_console(tio, flags);
+ setattr:
+-- 
+2.47.1
+
