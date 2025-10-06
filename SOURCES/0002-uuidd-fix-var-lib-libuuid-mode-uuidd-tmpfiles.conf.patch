@@ -1,0 +1,34 @@
+From 151dbf45503032839c02d07d8a5c89e2d064cb34 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Tue, 9 Jul 2024 17:04:09 +0200
+Subject: uuidd: fix /var/lib/libuuid mode uuidd-tmpfiles.conf
+
+The directory can be directly used by libuuid, for example, by running
+"uuidgen --time" as root, even if the uuidd daemon is not installed.
+In this case, we must create a clock.txt file with the uuidd group to
+prevent any potential ownership mismatch if the uuidd daemon is
+installed later. The 2xxx mode (setgid) forces open(O_CREAT) in
+libuuid to create the file with the uuidd group.
+
+Please note that mode 2755 is the standard used for years in RHEL.
+
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit e0c41735aa13a7a62e42c0428823537d3edc02a8)
+(cherry picked from commit 555152c36b1026ea97eb06a9a57fac154fa36ed0)
+---
+ misc-utils/uuidd-tmpfiles.conf.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/misc-utils/uuidd-tmpfiles.conf.in b/misc-utils/uuidd-tmpfiles.conf.in
+index b362930d8..90b8a8537 100644
+--- a/misc-utils/uuidd-tmpfiles.conf.in
++++ b/misc-utils/uuidd-tmpfiles.conf.in
+@@ -3,4 +3,4 @@
+ # See tmpfiles.d(5) for details
+ #
+ d @runstatedir@/uuidd 2775 uuidd uuidd -
+-d @localstatedir@/lib/libuuid 0755 uuidd uuidd -
++d @localstatedir@/lib/libuuid 2755 uuidd uuidd -
+-- 
+2.45.2
+

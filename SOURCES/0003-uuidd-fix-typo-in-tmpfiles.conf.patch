@@ -1,0 +1,28 @@
+From 5a3ce382501f4b56dbf8a6989d56c7aac63c0314 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Wed, 10 Jul 2024 15:55:35 +0200
+Subject: uuidd: fix typo in tmpfiles.conf
+
+Let's change 2755 to 2775. The directory must be writable for the
+'uuidd' group.
+
+Addresses: http://github.com/util-linux/util-linux/commit/e0c41735aa13a7a62e42c0428823537d3edc02a8
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 7af2539f58b3bd3bb2f5e44138595be116c8d76c)
+---
+ misc-utils/uuidd-tmpfiles.conf.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/misc-utils/uuidd-tmpfiles.conf.in b/misc-utils/uuidd-tmpfiles.conf.in
+index 90b8a8537..2245b1b7e 100644
+--- a/misc-utils/uuidd-tmpfiles.conf.in
++++ b/misc-utils/uuidd-tmpfiles.conf.in
+@@ -3,4 +3,4 @@
+ # See tmpfiles.d(5) for details
+ #
+ d @runstatedir@/uuidd 2775 uuidd uuidd -
+-d @localstatedir@/lib/libuuid 2755 uuidd uuidd -
++d @localstatedir@/lib/libuuid 2775 uuidd uuidd -
+-- 
+2.45.2
+

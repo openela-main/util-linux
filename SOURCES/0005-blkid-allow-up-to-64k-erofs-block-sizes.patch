@@ -1,0 +1,34 @@
+From 3efb3595577edf7e2c32edd8b5489d00113ff75d Mon Sep 17 00:00:00 2001
+From: Eric Sandeen <sandeen@redhat.com>
+Date: Fri, 24 Jan 2025 08:37:12 -0600
+Subject: blkid: allow up to 64k erofs block sizes
+
+Today, mkfs.erofs defaults to page size for block size, but blkid
+does not recognize this. Increase the limit to 64k.
+
+Reviewed-by: Gao Xiang <xiang@kernel.org>
+Signed-off-by: Eric Sandeen <sandeen@redhat.com>
+Signed-off-by: Karel Zak <kzak@redhat.com>
+Addresses: https://issues.redhat.com/browse/RHEL-76070
+---
+ libblkid/src/superblocks/erofs.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libblkid/src/superblocks/erofs.c b/libblkid/src/superblocks/erofs.c
+index 05822460b..57fd80220 100644
+--- a/libblkid/src/superblocks/erofs.c
++++ b/libblkid/src/superblocks/erofs.c
+@@ -73,8 +73,8 @@ static int probe_erofs(blkid_probe pr, const struct blkid_idmag *mag)
+ 	if (!sb)
+ 		return errno ? -errno : BLKID_PROBE_NONE;
+ 
+-	/* EROFS is restricted to 4KiB block size */
+-	if (sb->blkszbits > 31 || (1U << sb->blkszbits) > 4096)
++	/* block size must be between 512 and 64k */
++	if (sb->blkszbits < 9 || sb->blkszbits > 16)
+ 		return BLKID_PROBE_NONE;
+ 
+ 	if (!erofs_verify_checksum(pr, mag, sb))
+-- 
+2.48.1
+

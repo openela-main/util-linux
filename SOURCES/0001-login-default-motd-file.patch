@@ -1,0 +1,28 @@
+From c4354ccde565c742a75816ef46c2f7265415f1f7 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Wed, 10 Jul 2024 10:30:42 +0200
+Subject: login: default motd file
+
+This is port of the old RHEL patch to RHEL-10.
+
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ include/pathnames.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/pathnames.h b/include/pathnames.h
+index de456c53e..ac28a9a50 100644
+--- a/include/pathnames.h
++++ b/include/pathnames.h
+@@ -41,7 +41,7 @@
+ #ifndef _PATH_MAILDIR
+ # define _PATH_MAILDIR		"/var/spool/mail"
+ #endif
+-#define	_PATH_MOTDFILE		"/usr/share/misc/motd:/run/motd:/etc/motd"
++#define	_PATH_MOTDFILE		"/usr/share/misc/motd:/run/motd:/run/motd.d:/etc/motd:/etc/motd.d"
+ #ifndef _PATH_NOLOGIN
+ # define _PATH_NOLOGIN		"/etc/nologin"
+ #endif
+-- 
+2.45.2
+
