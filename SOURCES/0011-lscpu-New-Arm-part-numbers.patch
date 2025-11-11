@@ -1,0 +1,46 @@
+From 3863c5bac1a4ea75e1917878ec711c085f09a0d0 Mon Sep 17 00:00:00 2001
+From: Jeremy Linton <jeremy.linton@arm.com>
+Date: Thu, 6 Mar 2025 12:17:30 -0600
+Subject: lscpu: New Arm part numbers
+
+Arm has announced the Cortex-A320 and published the TRM here:
+https://developer.arm.com/documentation/109551
+
+The Cortex-A520AE with a TRM here:
+https://developer.arm.com/documentation/107726
+
+The Cortex-A720AE with a TRM here:
+https://developer.arm.com/documentation/102828
+
+The Neoverse-V3AE with a TRM here:
+https://developer.arm.com/documentation/101595
+
+Signed-off-by: Jeremy Linton <jeremy.linton@arm.com>
+Upstream: http://github.com/util-linux/util-linux/commit/be77fa82ad491f38537030c329c2a8e0612506a5
+Addresses: https://issues.redhat.com/browse/RHEL-82216
+---
+ sys-utils/lscpu-arm.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/sys-utils/lscpu-arm.c b/sys-utils/lscpu-arm.c
+index 949b31e71..682868550 100644
+--- a/sys-utils/lscpu-arm.c
++++ b/sys-utils/lscpu-arm.c
+@@ -93,10 +93,14 @@ static const struct id_part arm_part[] = {
+     { 0xd80, "Cortex-A520" },
+     { 0xd81, "Cortex-A720" },
+     { 0xd82, "Cortex-X4" },
++    { 0xd83, "Neoverse-V3AE" },
+     { 0xd84, "Neoverse-V3" },
+     { 0xd85, "Cortex-X925" },
+     { 0xd87, "Cortex-A725" },
++    { 0xd88, "Cortex-A520AE" },
++    { 0xd89, "Cortex-A720AE" },
+     { 0xd8e, "Neoverse-N3" },
++    { 0xd8f, "Cortex-A320" },
+     { -1, "unknown" },
+ };
+ 
+-- 
+2.50.1
+

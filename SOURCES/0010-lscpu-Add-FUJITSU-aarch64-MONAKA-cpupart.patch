@@ -1,0 +1,29 @@
+From 07c5d3c21b17b1dc0517ff4fe5bdd925c145c145 Mon Sep 17 00:00:00 2001
+From: "Emi, Kisanuki" <fj0570is@fujitsu.com>
+Date: Tue, 24 Dec 2024 06:27:51 +0000
+Subject: lscpu: Add FUJITSU aarch64 MONAKA cpupart
+
+Add an entry for FUJITSU aarch64 part MONAKA.
+
+Signed-off-by: Emi, Kisanuki <fj0570is@fujitsu.com>
+Upstream: http://github.com/util-linux/util-linux/commit/9156b69f05bc1519230d823c735cc69be9823de5
+Addresses: https://issues.redhat.com/browse/RHEL-82216
+---
+ sys-utils/lscpu-arm.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sys-utils/lscpu-arm.c b/sys-utils/lscpu-arm.c
+index 997ae88ff..949b31e71 100644
+--- a/sys-utils/lscpu-arm.c
++++ b/sys-utils/lscpu-arm.c
+@@ -249,6 +249,7 @@ static const struct id_part intel_part[] = {
+ 
+ static const struct id_part fujitsu_part[] = {
+     { 0x001, "A64FX" },
++    { 0x003, "MONAKA" },
+     { -1, "unknown" },
+ };
+ 
+-- 
+2.50.1
+
