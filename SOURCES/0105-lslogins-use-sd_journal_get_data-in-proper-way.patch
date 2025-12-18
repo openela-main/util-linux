@@ -1,0 +1,109 @@
+From ee95720a5d0507dfbdac99b0daeab6387cdc5832 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Thu, 22 Jul 2021 11:03:54 +0200
+Subject: lslogins: use sd_journal_get_data() in proper way
+
+man sd_journal_get_data:
+    The returned data is in a read-only memory map and is only valid until the next invocation
+    of sd_journal_get_data().
+
+It means that use data after 3x sd_journal_get_data() is really bad
+idea. It also seems better to not assume the fields are zero
+terminated as journal API works with void* and size_t to address the
+data.
+
+Addresses: https://bugzilla.redhat.com/show_bug.cgi?id=1984704
+Addresses: https://issues.redhat.com/browse/RHEL-117686
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 31d730eb7730f186a0a245f97a09df2fa625f6bd)
+---
+ login-utils/lslogins.c | 57 +++++++++++++++++++++++++-----------------
+ 1 file changed, 34 insertions(+), 23 deletions(-)
+
+diff --git a/login-utils/lslogins.c b/login-utils/lslogins.c
+index b81afc6c7..f8ce73101 100644
+--- a/login-utils/lslogins.c
++++ b/login-utils/lslogins.c
+@@ -1173,14 +1173,28 @@ static void fill_table(const void *u, const VISIT which, const int depth __attri
+ 	return;
+ }
+ #ifdef HAVE_LIBSYSTEMD
++static char *get_journal_data(sd_journal *j, const char *name)
++{
++	const char *data = NULL, *p;
++	size_t len = 0;
++
++	if (sd_journal_get_data(j, name, (const void **) &data, &len) < 0
++	    || !data || !len)
++		return NULL;
++
++	/* Get rid of journal entry field identifiers */
++	p = strnchr(data, len, '=');
++	if (!p || !*(p + 1))
++		return NULL;
++	p++;
++
++	return xstrndup(p, len - (p - data));
++}
++
+ static void print_journal_tail(const char *journal_path, uid_t uid, size_t len, int time_mode)
+ {
+ 	sd_journal *j;
+-	char *match, *timestamp;
+-	uint64_t x;
+-	time_t t;
+-	const char *identifier, *pid, *message;
+-	size_t identifier_len, pid_len, message_len;
++	char *match;
+ 
+ 	if (journal_path)
+ 		sd_journal_open_directory(&j, journal_path, 0);
+@@ -1194,30 +1208,27 @@ static void print_journal_tail(const char *journal_path, uid_t uid, size_t len,
+ 	sd_journal_previous_skip(j, len);
+ 
+ 	do {
+-		if (0 > sd_journal_get_data(j, "SYSLOG_IDENTIFIER",
+-				(const void **) &identifier, &identifier_len))
+-			goto done;
+-		if (0 > sd_journal_get_data(j, "_PID",
+-				(const void **) &pid, &pid_len))
+-			goto done;
+-		if (0 > sd_journal_get_data(j, "MESSAGE",
+-				(const void **) &message, &message_len))
+-			goto done;
++		char *id, *pid, *msg, *ts;
++		uint64_t x;
++		time_t t;
+ 
+ 		sd_journal_get_realtime_usec(j, &x);
+ 		t = x / 1000000;
+-		timestamp = make_time(time_mode, t);
+-		/* Get rid of journal entry field identifiers */
+-		identifier = strchr(identifier, '=') + 1;
+-		pid = strchr(pid, '=') + 1;
+-		message = strchr(message, '=') + 1;
++		ts = make_time(time_mode, t);
+ 
+-		fprintf(stdout, "%s %s[%s]: %s\n", timestamp, identifier, pid,
+-			message);
+-		free(timestamp);
++		id = get_journal_data(j, "SYSLOG_IDENTIFIER");
++		pid = get_journal_data(j, "_PID");
++		msg = get_journal_data(j, "MESSAGE");
++
++		if (ts && id && pid && msg)
++			fprintf(stdout, "%s %s[%s]: %s\n", ts, id, pid, msg);
++
++		free(ts);
++		free(id);
++		free(pid);
++		free(msg);
+ 	} while (sd_journal_next(j));
+ 
+-done:
+ 	free(match);
+ 	sd_journal_flush_matches(j);
+ 	sd_journal_close(j);
+-- 
+2.51.1
+

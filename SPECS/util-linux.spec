@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 46%{?dist}
+Release: 47%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -304,7 +304,8 @@ Patch102: 0102-libblkid-bsd-fix-buffer-pointer-use-fuzzing.patch
 Patch103: 0103-libblkid-probe-fix-size-and-offset-overflows-fuzzing.patch
 # RHEL-6274 - lslogins incorrect account expiration field
 Patch104: 0104-timeutils-match-today-day-and-this-year-correctly.patch
-
+# RHEL-117686 - lslogins: use sd_journal_get_data() in proper way
+Patch105: 0105-lslogins-use-sd_journal_get_data-in-proper-way.patch
 
 
 %description
@@ -1154,6 +1155,9 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Mon Nov 10 2025 Karel Zak <kzak@redhat.com> 2.32.1-47
+- fix RHEL-117686 - lslogins: use sd_journal_get_data() in proper way
+
 * Thu Feb 08 2024 Karel Zak <kzak@redhat.com> 2.32.1-46
 - fix RHEL-13741 - lscpu: avoid EBUSY on cpuinfo_max_freq
 - fix RHEL-18451 - logger: initialize socket credentials control union
