@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 47%{?dist}
+Release: 48%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -306,6 +306,10 @@ Patch103: 0103-libblkid-probe-fix-size-and-offset-overflows-fuzzing.patch
 Patch104: 0104-timeutils-match-today-day-and-this-year-correctly.patch
 # RHEL-117686 - lslogins: use sd_journal_get_data() in proper way
 Patch105: 0105-lslogins-use-sd_journal_get_data-in-proper-way.patch
+# RHEL-134296 - libblkid: use snprintf() instead of sprintf()
+Patch106: 0106-libblkid-use-snprintf-instead-of-sprintf.patch
+# RHEL-133946 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+Patch107: 0107-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
 
 
 %description
@@ -1155,6 +1159,10 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Mon Dec 15 2025 Karel Zak <kzak@redhat.com> 2.32.1-48
+- fix RHEL-134296 - libblkid: use snprintf() instead of sprintf()
+- fix RHEL-133946 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+
 * Mon Nov 10 2025 Karel Zak <kzak@redhat.com> 2.32.1-47
 - fix RHEL-117686 - lslogins: use sd_journal_get_data() in proper way
 
