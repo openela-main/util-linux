@@ -1,0 +1,124 @@
+From d76f66ad422850011370618e358da560479dabc1 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Mon, 6 Oct 2025 15:04:24 +0200
+Subject: libblkid: use snprintf() instead of sprintf()
+
+Replace sprintf() calls with snprintf() to ensure proper bounds
+checking when formatting strings.
+
+In encode.c, the check now validates snprintf() return value instead
+of pre-checking buffer size, providing more robust error handling.
+
+Addresses: https://issues.redhat.com/browse/RHEL-134269
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ libblkid/src/devname.c | 16 +++++++++-------
+ libblkid/src/encode.c  |  6 ++++--
+ libblkid/src/save.c    | 10 ++++++----
+ 3 files changed, 19 insertions(+), 13 deletions(-)
+
+diff --git a/libblkid/src/devname.c b/libblkid/src/devname.c
+index c541d30ba..a48a81a45 100644
+--- a/libblkid/src/devname.c
++++ b/libblkid/src/devname.c
+@@ -164,7 +164,7 @@ static int is_dm_leaf(const char *devname)
+ 		    strncmp(de->d_name, "dm-", 3) != 0 ||
+ 		    strlen(de->d_name) > sizeof(path)-32)
+ 			continue;
+-		sprintf(path, "/sys/block/%s/slaves", de->d_name);
++		snprintf(path, sizeof(path), "/sys/block/%s/slaves", de->d_name);
+ 		if ((d_dir = opendir(path)) == NULL)
+ 			continue;
+ 		while ((d_de = readdir(d_dir)) != NULL) {
+@@ -321,14 +321,16 @@ static void lvm_probe_all(blkid_cache cache, int only_if_new)
+ 		char		*vdirname;
+ 		char		*vg_name;
+ 		struct dirent	*lv_iter;
++		size_t		len;
+ 
+ 		vg_name = vg_iter->d_name;
+ 		if (!strcmp(vg_name, ".") || !strcmp(vg_name, ".."))
+ 			continue;
+-		vdirname = malloc(vg_len + strlen(vg_name) + 8);
++		len = vg_len + strlen(vg_name) + 8;
++		vdirname = malloc(len);
+ 		if (!vdirname)
+ 			goto exit;
+-		sprintf(vdirname, "%s/%s/LVs", VG_DIR, vg_name);
++		snprintf(vdirname, len, "%s/%s/LVs", VG_DIR, vg_name);
+ 
+ 		lv_list = opendir(vdirname);
+ 		free(vdirname);
+@@ -342,16 +344,16 @@ static void lvm_probe_all(blkid_cache cache, int only_if_new)
+ 			if (!strcmp(lv_name, ".") || !strcmp(lv_name, ".."))
+ 				continue;
+ 
+-			lvm_device = malloc(vg_len + strlen(vg_name) +
+-					    strlen(lv_name) + 8);
++			len = vg_len + strlen(vg_name) + strlen(lv_name) + 8;
++			lvm_device = malloc(len);
+ 			if (!lvm_device) {
+ 				closedir(lv_list);
+ 				goto exit;
+ 			}
+-			sprintf(lvm_device, "%s/%s/LVs/%s", VG_DIR, vg_name,
++			snprintf(lvm_device, len, "%s/%s/LVs/%s", VG_DIR, vg_name,
+ 				lv_name);
+ 			dev = lvm_get_devno(lvm_device);
+-			sprintf(lvm_device, "%s/%s", vg_name, lv_name);
++			snprintf(lvm_device, len, "%s/%s", vg_name, lv_name);
+ 			DBG(DEVNAME, ul_debug("Probe LVM dev %s: devno 0x%04X",
+ 						  lvm_device,
+ 						  (unsigned int) dev));
+diff --git a/libblkid/src/encode.c b/libblkid/src/encode.c
+index 9c2220428..d79865a76 100644
+--- a/libblkid/src/encode.c
++++ b/libblkid/src/encode.c
+@@ -263,9 +263,11 @@ int blkid_encode_string(const char *str, char *str_enc, size_t len)
+ 			j += seqlen;
+ 			i += (seqlen-1);
+ 		} else if (str[i] == '\\' || !is_whitelisted(str[i], NULL)) {
+-			if (len-j < 4)
++			int rc;
++
++			rc = snprintf(&str_enc[j], len-j, "\\x%02x", (unsigned char) str[i]);
++			if (rc != 4)
+ 				goto err;
+-			sprintf(&str_enc[j], "\\x%02x", (unsigned char) str[i]);
+ 			j += 4;
+ 		} else {
+ 			if (len-j < 1)
+diff --git a/libblkid/src/save.c b/libblkid/src/save.c
+index 9a342c69c..1a617c072 100644
+--- a/libblkid/src/save.c
++++ b/libblkid/src/save.c
+@@ -128,9 +128,10 @@ int blkid_flush_cache(blkid_cache cache)
+ 	 * a temporary file then we open it directly.
+ 	 */
+ 	if (ret == 0 && S_ISREG(st.st_mode)) {
+-		tmp = malloc(strlen(filename) + 8);
++		size_t len = strlen(filename) + 8;
++		tmp = malloc(len);
+ 		if (tmp) {
+-			sprintf(tmp, "%s-XXXXXX", filename);
++			snprintf(tmp, len, "%s-XXXXXX", filename);
+ 			fd = mkstemp_cloexec(tmp);
+ 			if (fd >= 0) {
+ 				if (fchmod(fd, 0644) != 0)
+@@ -178,10 +179,11 @@ int blkid_flush_cache(blkid_cache cache)
+ 			DBG(SAVE, ul_debug("unlinked temp cache %s", opened));
+ 		} else {
+ 			char *backup;
++			size_t len = strlen(filename) + 5;
+ 
+-			backup = malloc(strlen(filename) + 5);
++			backup = malloc(len);
+ 			if (backup) {
+-				sprintf(backup, "%s.old", filename);
++				snprintf(backup, len, "%s.old", filename);
+ 				unlink(backup);
+ 				if (link(filename, backup)) {
+ 					DBG(SAVE, ul_debug("can't link %s to %s",
+-- 
+2.51.1
+

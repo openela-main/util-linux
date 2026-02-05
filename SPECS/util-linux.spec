@@ -236,6 +236,13 @@ Patch81: 0081-lib-timeutils-parse_timestamp-fix-second-parsing.patch
 # RHEL-56983 - sulogin: fix POSIX locale use
 Patch82: 0082-sulogin-fix-POSIX-locale-use.patch
 
+### RHEL-9.7.Z
+#
+# RHEL-134269 - libblkid: use snprintf() instead of sprintf()
+Patch83: 0083-libblkid-use-snprintf-instead-of-sprintf.patch
+# RHEL-133955 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+Patch84: 0084-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
+
 
 %description
 The util-linux package contains a large variety of low-level system
@@ -1070,6 +1077,10 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Wed Dec 17 2025 Karel Zak <kzak@redhat.com> 2.37.4-21.el9_7
+- fix RHEL-134269 - libblkid: use snprintf() instead of sprintf()
+- fix RHEL-133955 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+
 * Thu Jan 16 2025 Karel Zak <kzak@redhat.com> 2.37.4-21
 - fix RHEL-56354 - lib/timeutils: parse_timestamp: fix second parsing
 - fix RHEL-56983 - sulogin: fix POSIX locale use
