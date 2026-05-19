@@ -1,0 +1,58 @@
+From 6d73d34d70db580c877dd77788a430f4730a62d8 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Tue, 24 Sep 2024 13:37:13 +0200
+Subject: libfdisk: (dos) ignore incomplete EBR for non-wholedisk
+
+The logical partitions are defined by a chain of extended partitions,
+with the beginning of the chain located on the whole disk device.
+
+If a user runs "fdisk --list /dev/sda4", libfdisk cannot calculate proper
+offsets for the items in the chain, resulting in the following error
+message:
+
+ Failed to read extended partition table (offset=22528): Invalid argument
+
+This error message may confuse users and is unnecessary when fdisk is
+used in list-only mode (--list option). It would be sufficient to only
+print the content of the partition without the error message and not
+continue to the next item in the chain.
+
+However, in write mode (without --list), the error message will still
+be displayed as it is potentially dangerous to edit the EBR table.
+
+Addresses: https://issues.redhat.com/browse/RHEL-59867
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 9f0e6584696de7533e5571107d03f3426a359138)
+---
+ libfdisk/src/dos.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/libfdisk/src/dos.c b/libfdisk/src/dos.c
+index 5c00164ce..db7e25716 100644
+--- a/libfdisk/src/dos.c
++++ b/libfdisk/src/dos.c
+@@ -11,6 +11,7 @@
+ #include "randutils.h"
+ #include "pt-mbr.h"
+ #include "strutils.h"
++#include "sysfs.h"
+ 
+ #include "fdiskP.h"
+ 
+@@ -527,6 +528,13 @@ static void read_extended(struct fdisk_context *cxt, size_t ext)
+ 	struct dos_partition *p, *q;
+ 	struct fdisk_dos_label *l = self_label(cxt);
+ 
++	if (fdisk_is_listonly(cxt) &&
++	    !sysfs_devno_is_wholedisk(fdisk_get_devno(cxt))) {
++		DBG(LABEL, ul_debug("DOS: unable to gather logical partition chain "
++				  "when running on a non-whole disk device."));
++		return;
++	}
++
+ 	l->ext_index = ext;
+ 	pex = self_pte(cxt, ext);
+ 	if (!pex) {
+-- 
+2.50.1
+

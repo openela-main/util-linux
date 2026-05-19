@@ -1,4 +1,4 @@
-From c5bc4b1595300aecf2e140bdce8e97c2bde57786 Mon Sep 17 00:00:00 2001
+From e00af23ce51151a5a2e7b207dbe8d1bc715e4bd1 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Mon, 6 Oct 2025 15:04:24 +0200
 Subject: libblkid: use snprintf() instead of sprintf()
@@ -12,10 +12,10 @@ of pre-checking buffer size, providing more robust error handling.
 In probe.c, snprintf() is used with proper size calculation based on
 remaining buffer space.
 
-Addresses: https://issues.redhat.com/browse/RHEL-134271
+Addresses: https://issues.redhat.com/browse/RHEL-121120
 
 Signed-off-by: Karel Zak <kzak@redhat.com>
-(cherry picked from commit e00af23ce51151a5a2e7b207dbe8d1bc715e4bd1)
+(cherry picked from commit 041380f4ca7244df624bf7efdb5e27fdd3144175)
 ---
  libblkid/src/encode.c | 6 ++++--
  libblkid/src/probe.c  | 4 ++--
@@ -55,5 +55,5 @@ index 76905e197..cd45bcdf7 100644
  
  	ul_debug(
 -- 
-2.51.1
+2.51.0
 

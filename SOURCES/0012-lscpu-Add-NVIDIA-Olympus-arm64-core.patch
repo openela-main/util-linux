@@ -1,0 +1,29 @@
+From 8645e1ce6b64a57b8159b9509f882112eaf97425 Mon Sep 17 00:00:00 2001
+From: "Matthew R. Ochs" <mochs@nvidia.com>
+Date: Tue, 2 Sep 2025 13:28:36 -0700
+Subject: lscpu: Add NVIDIA Olympus arm64 core
+
+Add an entry for NVIDIA Olympus arm64 core.
+
+Signed-off-by: Matthew R. Ochs <mochs@nvidia.com>
+Upstream: http://github.com/util-linux/util-linux/commit/908777470d403ec30c525472ba0d3701c9c5a223
+Addresses: https://issues.redhat.com/browse/RHEL-113639
+---
+ sys-utils/lscpu-arm.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sys-utils/lscpu-arm.c b/sys-utils/lscpu-arm.c
+index 682868550..3397e9d4d 100644
+--- a/sys-utils/lscpu-arm.c
++++ b/sys-utils/lscpu-arm.c
+@@ -170,6 +170,7 @@ static const struct id_part nvidia_part[] = {
+     { 0x000, "Denver" },
+     { 0x003, "Denver 2" },
+     { 0x004, "Carmel" },
++    { 0x010, "Olympus" },
+     { -1, "unknown" },
+ };
+ 
+-- 
+2.50.1
+

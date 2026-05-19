@@ -1,0 +1,241 @@
+From af9954b8da649684241c55fa617fdf629b33a454 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Mon, 8 Sep 2025 11:44:16 +0200
+Subject: libfdisk: improve collision reporting
+
+In some cases, a collision occurs in the first sector. Creating a new
+partition table overwrites this sector, but updating an existing table
+does not. In the latter case, promising to wipe the collision is a
+bug.
+
+Because we cannot know whether the collision is expected (e.g., hybrid
+or boot disks) or unintended, we inform the user and let them decide.
+libfdisk can wipe the unwanted signature only when creating a new
+partition table; otherwise, the user can use wipefs.
+
+This commit introduces fdisk_is_collision_area(), an API to detect
+where the collision occurs. The function is generic and not limited to
+the first sector.
+
+Fixes: https://github.com/util-linux/util-linux/issues/3659
+Signed-off-by: Karel Zak <kzak@redhat.com>
+Upstream: http://github.com/util-linux/util-linux/commit/e873aa0322f42167a402e95dd398fcc4eb256119
+Addresses: https://issues.redhat.com/browse/RHEL-82162
+---
+ disk-utils/fdisk.c                  | 21 +++++++++++++++------
+ disk-utils/sfdisk.c                 | 28 +++++++++++++++++++---------
+ libfdisk/docs/libfdisk-sections.txt |  1 +
+ libfdisk/src/context.c              | 21 +++++++++++++++++++++
+ libfdisk/src/fdiskP.h               |  1 +
+ libfdisk/src/libfdisk.h.in          |  1 +
+ libfdisk/src/libfdisk.sym           |  4 ++++
+ libfdisk/src/wipe.c                 | 23 ++++++++++++++++-------
+ 8 files changed, 78 insertions(+), 22 deletions(-)
+
+diff --git a/disk-utils/fdisk.c b/disk-utils/fdisk.c
+index c75a7a63c..490e7b670 100644
+--- a/disk-utils/fdisk.c
++++ b/disk-utils/fdisk.c
+@@ -924,12 +924,21 @@ void follow_wipe_mode(struct fdisk_context *cxt)
+ 		dowipe = 1;	/* always remove old PT */
+ 
+ 	fdisk_enable_wipe(cxt, dowipe);
+-	if (dowipe)
+-		fdisk_warnx(cxt, _(
+-			"The device contains '%s' signature and it will be removed by a write command. "
+-			"See fdisk(8) man page and --wipe option for more details."),
+-			fdisk_get_collision(cxt));
+-	else
++
++	if (dowipe) {
++		/* check if collision in first sector */
++		if (fdisk_has_label(cxt) && fdisk_is_collision_area(cxt, 0,
++						fdisk_get_sector_size(cxt)))
++			fdisk_warnx(cxt, _(
++				"The device contains a '%s' signature in the first sector; it will not be wiped "
++				"unless you create a new partition table. Alternatively, use wipefs(8)."),
++					fdisk_get_collision(cxt));
++		else
++			fdisk_warnx(cxt, _(
++				"The device contains '%s' signature and it will be removed by a write command. "
++				"See fdisk(8) man page and --wipe option for more details."),
++					fdisk_get_collision(cxt));
++	} else
+ 		fdisk_warnx(cxt, _(
+ 			"The device contains '%s' signature and it may remain on the device. "
+ 			"It is recommended to wipe the device with wipefs(8) or "
+diff --git a/disk-utils/sfdisk.c b/disk-utils/sfdisk.c
+index d8dd8d296..b25cc7955 100644
+--- a/disk-utils/sfdisk.c
++++ b/disk-utils/sfdisk.c
+@@ -1661,22 +1661,32 @@ static void follow_wipe_mode(struct sfdisk *sf)
+ 	if (sf->quiet)
+ 		return;
+ 
+-	if (dowipe) {
+-		if (!fdisk_is_ptcollision(sf->cxt)) {
+-			fdisk_warnx(sf->cxt, _(
+-				"The device contains '%s' signature and it may be removed by a write command. "
+-				"See sfdisk(8) man page and --wipe option for more details."),
+-				fdisk_get_collision(sf->cxt));
+-			fputc('\n', stdout);
+-		}
+-	} else {
++	if (!dowipe) {
+ 		fdisk_warnx(sf->cxt, _(
+ 			"The device contains '%s' signature and it may remain on the device. "
+ 			"It is recommended to wipe the device with wipefs(8) or "
+ 			"sfdisk --wipe, in order to avoid possible collisions."),
+ 			fdisk_get_collision(sf->cxt));
+ 		fputc('\n', stderr);
++		return;
+ 	}
++
++	if (fdisk_is_ptcollision(sf->cxt))
++		return;		/* PT will be replaced */
++
++	if (sf->append && fdisk_has_label(sf->cxt)
++	    && fdisk_is_collision_area(sf->cxt, 0, fdisk_get_sector_size(sf->cxt)))
++		fdisk_warnx(sf->cxt, _(
++			"The device contains a '%s' signature in the first sector; it will not be wiped "
++			"unless you create a new partition table. Alternatively, use wipefs(8)."),
++			fdisk_get_collision(sf->cxt));
++	else
++		fdisk_warnx(sf->cxt, _(
++			"The device contains '%s' signature and it may be removed by a write command. "
++			"See sfdisk(8) man page and --wipe option for more details."),
++			fdisk_get_collision(sf->cxt));
++
++	fputc('\n', stdout);
+ }
+ 
+ static int wipe_partition(struct sfdisk *sf, size_t partno)
+diff --git a/libfdisk/docs/libfdisk-sections.txt b/libfdisk/docs/libfdisk-sections.txt
+index efc138571..1e4b82e2d 100644
+--- a/libfdisk/docs/libfdisk-sections.txt
++++ b/libfdisk/docs/libfdisk-sections.txt
+@@ -335,6 +335,7 @@ fdisk_has_dialogs
+ fdisk_has_label
+ fdisk_has_protected_bootbits
+ fdisk_has_wipe
++fdisk_is_collision_area
+ fdisk_is_details
+ fdisk_is_labeltype
+ fdisk_is_listonly
+diff --git a/libfdisk/src/context.c b/libfdisk/src/context.c
+index 463a60f86..a9e6027ea 100644
+--- a/libfdisk/src/context.c
++++ b/libfdisk/src/context.c
+@@ -449,6 +449,27 @@ int fdisk_is_ptcollision(struct fdisk_context *cxt)
+ 	return cxt->pt_collision;
+ }
+ 
++/**
++ * fdisk_is_collision_area:
++ * @cxt: fdisk context
++ *
++ * If there is a collision with the filesystem or another partition table,
++ * verify that the detected magic string is within the specified area.
++ *
++ * Returns: 0 or 1
++ *
++ * Since: v2.42
++ */
++int fdisk_is_collision_area(struct fdisk_context *cxt,
++		uint64_t start, uint64_t size)
++{
++	if (cxt->collision &&
++	    start <= cxt->collision_offset && cxt->collision_offset <= start + size)
++		return 1;
++
++	return 0;
++}
++
+ /**
+  * fdisk_get_npartitions:
+  * @cxt: context
+diff --git a/libfdisk/src/fdiskP.h b/libfdisk/src/fdiskP.h
+index 49e057f11..84203976a 100644
+--- a/libfdisk/src/fdiskP.h
++++ b/libfdisk/src/fdiskP.h
+@@ -409,6 +409,7 @@ struct fdisk_context {
+ 		     listonly : 1;		/* list partition, nothing else */
+ 
+ 	char *collision;			/* name of already existing FS/PT */
++	uint64_t collision_offset;
+ 	struct list_head wipes;			/* list of areas to wipe before write */
+ 
+ 	int sizeunit;				/* SIZE fields, FDISK_SIZEUNIT_* */
+diff --git a/libfdisk/src/libfdisk.h.in b/libfdisk/src/libfdisk.h.in
+index 9c20f44be..ccf8582ed 100644
+--- a/libfdisk/src/libfdisk.h.in
++++ b/libfdisk/src/libfdisk.h.in
+@@ -217,6 +217,7 @@ int fdisk_enable_wipe(struct fdisk_context *cxt, int enable);
+ int fdisk_has_wipe(struct fdisk_context *cxt);
+ const char *fdisk_get_collision(struct fdisk_context *cxt);
+ int fdisk_is_ptcollision(struct fdisk_context *cxt);
++int fdisk_is_collision_area(struct fdisk_context *cxt, uint64_t start, uint64_t size);
+ 
+ int fdisk_set_unit(struct fdisk_context *cxt, const char *str);
+ const char *fdisk_get_unit(struct fdisk_context *cxt, int n);
+diff --git a/libfdisk/src/libfdisk.sym b/libfdisk/src/libfdisk.sym
+index bb69e93c4..81049133a 100644
+--- a/libfdisk/src/libfdisk.sym
++++ b/libfdisk/src/libfdisk.sym
+@@ -324,3 +324,7 @@ FDISK_2.38 {
+ FDISK_2.40 {
+ 	fdisk_partition_get_max_size;
+ } FDISK_2.38;
++
++FDISK_2_42 {
++	fdisk_is_collision_area;
++} FDISK_2.40;
+diff --git a/libfdisk/src/wipe.c b/libfdisk/src/wipe.c
+index bb5f1bb38..48e0036bf 100644
+--- a/libfdisk/src/wipe.c
++++ b/libfdisk/src/wipe.c
+@@ -178,25 +178,34 @@ int fdisk_check_collisions(struct fdisk_context *cxt)
+ 
+ 	blkid_probe_enable_superblocks(pr, 1);
+ 	blkid_probe_set_superblocks_flags(pr, BLKID_SUBLKS_TYPE |
++					      BLKID_SUBLKS_MAGIC |
+ 			                      BLKID_SUBLKS_BADCSUM);
+ 	blkid_probe_enable_partitions(pr, 1);
+-	blkid_probe_set_partitions_flags(pr,  BLKID_PARTS_FORCE_GPT);
++	blkid_probe_set_partitions_flags(pr,  BLKID_PARTS_FORCE_GPT |
++					      BLKID_PARTS_MAGIC);
+ 
+ 	/* we care about the first found FS/raid, so don't call blkid_do_probe()
+ 	 * in loop or don't use blkid_do_fullprobe() ... */
+ 	rc = blkid_do_probe(pr);
+ 	if (rc == 0) {
+ 		const char *name = NULL;
++		const char *off = NULL;
+ 
+-		if (blkid_probe_lookup_value(pr, "TYPE", &name, 0) == 0)
+-			cxt->collision = strdup(name);
+-		else if (blkid_probe_lookup_value(pr, "PTTYPE", &name, 0) == 0) {
+-			cxt->collision = strdup(name);
++		if (blkid_probe_lookup_value(pr, "TYPE", &name, 0) == 0) {
++			blkid_probe_lookup_value(pr, "SBMAGIC_OFFSET", &off, NULL);
++
++		} else if (blkid_probe_lookup_value(pr, "PTTYPE", &name, 0) == 0) {
++			blkid_probe_lookup_value(pr, "PTMAGIC_OFFSET", &off, NULL);
+ 			cxt->pt_collision = 1;
+ 		}
+ 
+-		if (name && !cxt->collision)
+-			rc = -ENOMEM;
++		if (name) {
++			cxt->collision = strdup(name);
++			if (!cxt->collision)
++				rc = -ENOMEM;
++		}
++		if (!rc && off)
++			cxt->collision_offset = strtoumax(off, NULL, 10);
+ 	}
+ 
+ 	blkid_free_probe(pr);
+-- 
+2.50.1
+

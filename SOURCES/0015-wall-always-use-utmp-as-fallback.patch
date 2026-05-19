@@ -1,4 +1,4 @@
-From 0ceb3eed0e696fedf11daa845aa25870985415d3 Mon Sep 17 00:00:00 2001
+From 4184803d9a04643ed9235bafb29e926b11714f52 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Mon, 3 Jun 2024 14:32:18 +0200
 Subject: wall: always use utmp as fallback
@@ -12,8 +12,8 @@ This commit uses strv (string vector) to collect tty names from both
 sources (systemd and utmp) and then sends a message to all ttys.
 
 Addresses: https://bugzilla.redhat.com/show_bug.cgi?id=2283049
-Addresses: https://issues.redhat.com/browse/RHEL-143966
 Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 0af497c6688b53a3a176176bfbcdca821bd856ec)
 ---
  term-utils/wall.c | 57 ++++++++++++++++++++++++++++++++---------------
  1 file changed, 39 insertions(+), 18 deletions(-)
@@ -133,5 +133,5 @@ index 125fde438..22c3918bb 100644
  	free_group_workspace(group_buf);
  	exit(EXIT_SUCCESS);
 -- 
-2.52.0
+2.50.1
 
