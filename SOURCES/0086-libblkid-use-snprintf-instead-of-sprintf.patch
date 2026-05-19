@@ -1,6 +1,6 @@
-From d76f66ad422850011370618e358da560479dabc1 Mon Sep 17 00:00:00 2001
+From ffcd2a314076d7e0df92d851480c313a823573a7 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
-Date: Mon, 6 Oct 2025 15:04:24 +0200
+Date: Mon, 10 Nov 2025 10:37:09 +0100
 Subject: libblkid: use snprintf() instead of sprintf()
 
 Replace sprintf() calls with snprintf() to ensure proper bounds
@@ -9,7 +9,15 @@ checking when formatting strings.
 In encode.c, the check now validates snprintf() return value instead
 of pre-checking buffer size, providing more robust error handling.
 
-Addresses: https://issues.redhat.com/browse/RHEL-134269
+In save.c, snprintf() is used with size_t len variables to track
+buffer sizes for temporary and backup filename creation.
+
+In devname.c, snprintf() is used for both fixed-size buffers (with
+sizeof()) and dynamically allocated buffers (with size_t len
+variables).
+
+Addresses: https://issues.redhat.com/browse/RHEL-123531
+
 Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libblkid/src/devname.c | 16 +++++++++-------

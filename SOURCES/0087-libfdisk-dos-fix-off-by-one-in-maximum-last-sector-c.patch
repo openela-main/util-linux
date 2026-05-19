@@ -1,0 +1,46 @@
+From d1ae8502f423420320b0a7d2656a3a0cc41f2416 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Thu, 30 Oct 2025 12:11:43 +0100
+Subject: libfdisk: (dos) fix off-by-one in maximum last sector calculation
+
+The get_disk_ranges() function incorrectly capped the last usable
+sector at UINT_MAX, which could cause an overflow when calculating
+partition size for MBR partition tables.
+
+MBR stores partition size as a 32-bit value with maximum UINT_MAX.
+The partition size is calculated as: size = stop - start + 1
+
+For a partition starting at sector 0:
+- If stop = UINT_MAX: size = UINT_MAX + 1 (overflow!)
+- If stop = UINT_MAX - 1: size = UINT_MAX (correct maximum)
+
+This fixes the inconsistency where dos_init() correctly warns about
+disks larger than UINT_MAX sectors (2TiB - 512 bytes for 512-byte
+sectors), but get_disk_ranges() allowed creating partitions that
+would overflow the 32-bit size field.
+
+Addresses: https://issues.redhat.com/browse/RHEL-123536
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 578923fe582903628ecc0d2a434af0affa3660d2)
+---
+ libfdisk/src/dos.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libfdisk/src/dos.c b/libfdisk/src/dos.c
+index 5d93e09b8..e6e0e757c 100644
+--- a/libfdisk/src/dos.c
++++ b/libfdisk/src/dos.c
+@@ -1145,8 +1145,8 @@ static int get_disk_ranges(struct fdisk_context *cxt, int logical,
+ 		else
+ 			*last = cxt->total_sectors - 1;
+ 
+-		if (*last > UINT_MAX)
+-			*last = UINT_MAX;
++		if (*last >= UINT_MAX)
++			*last = UINT_MAX - 1;
+ 		*first = cxt->first_lba;
+ 	}
+ 
+-- 
+2.51.1
+

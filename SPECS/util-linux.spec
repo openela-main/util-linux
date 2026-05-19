@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 21%{?dist}
+Release: 25%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -28,6 +28,7 @@ BuildRequires: popt-devel
 BuildRequires: libutempter-devel
 Buildrequires: systemd-devel
 BuildRequires: systemd
+BuildRequires: systemd-rpm-macros
 Buildrequires: libuser-devel
 BuildRequires: libcap-ng-devel
 BuildRequires: %{pypkg}-devel
@@ -37,6 +38,7 @@ BuildRequires: rubygem-asciidoctor
 %ifarch ppc64le
 BuildRequires: librtas-devel
 %endif
+%{?sysusers_requires_compat}
 
 # enable if make changes to build-system
 #BuildRequires: autoconf
@@ -55,6 +57,7 @@ Source12: util-linux-su.pamd
 Source13: util-linux-su-l.pamd
 Source14: util-linux-runuser.pamd
 Source15: util-linux-runuser-l.pamd
+Source16: util-linux-uuidd-sysusers.conf
 
 ### Obsoletes & Conflicts & Provides
 Conflicts: initscripts < 9.79-4
@@ -236,12 +239,20 @@ Patch81: 0081-lib-timeutils-parse_timestamp-fix-second-parsing.patch
 # RHEL-56983 - sulogin: fix POSIX locale use
 Patch82: 0082-sulogin-fix-POSIX-locale-use.patch
 
-### RHEL-9.7.Z
+### RHEL-9.8
 #
-# RHEL-134269 - libblkid: use snprintf() instead of sprintf()
-Patch83: 0083-libblkid-use-snprintf-instead-of-sprintf.patch
-# RHEL-133955 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
-Patch84: 0084-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
+# RHEL-113638 - lscpu: update ARM identifiers
+Patch83: 0083-lscpu-update-ARM-identifiers.patch
+# RHEL-108386 - libblkid: (jmicron_raid) backport checksum verification
+Patch84: 0084-libblkid-jmicron_raid-backport-checksum-verification.patch
+# RHEL-123527 - mount: improve --all documentation
+Patch85: 0085-mount-improve-all-documentation.patch
+# RHEL-123531 - libblkid: use snprintf() instead of sprintf()
+Patch86: 0086-libblkid-use-snprintf-instead-of-sprintf.patch
+# RHEL-123536 - libfdisk: (dos) fix off-by-one in maximum last sector calculation
+Patch87: 0087-libfdisk-dos-fix-off-by-one-in-maximum-last-sector-c.patch
+# RHEL-133956 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+Patch88: 0088-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
 
 
 %description
@@ -496,6 +507,8 @@ install -m 644 %{SOURCE4} ${RPM_BUILD_ROOT}%{_tmpfilesdir}/uuidd.conf
 install -d ${RPM_BUILD_ROOT}/run/uuidd
 install -d ${RPM_BUILD_ROOT}/var/lib/libuuid
 
+install -m 644 -D %{SOURCE16} %{buildroot}%{_sysusersdir}/uuidd-sysusers.conf
+
 # /etc/adjtime
 install -m 644 %{SOURCE5} ${RPM_BUILD_ROOT}%{_sysconfdir}/adjtime
 
@@ -597,11 +610,8 @@ for I in /etc/blkid.tab /etc/blkid.tab.old \
 done
 
 %pre -n uuidd
-getent group uuidd >/dev/null || groupadd -r uuidd
-getent passwd uuidd >/dev/null || \
-useradd -r -g uuidd -d /var/lib/libuuid -s /sbin/nologin \
-    -c "UUID generator helper daemon" uuidd
-exit 0
+%sysusers_create_compat %{SOURCE16}
+
 
 # Please, keep uuidd running after installation! Note that systemd_post is
 # "systemctl preset" and it enable/disable service only.
@@ -1002,6 +1012,7 @@ fi
 %dir %attr(2775, uuidd, uuidd) /run/uuidd
 %{compldir}/uuidd
 %{_tmpfilesdir}/uuidd.conf
+%{_sysusersdir}/uuidd-sysusers.conf
 
 
 %files -n libfdisk
@@ -1077,9 +1088,20 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
-* Wed Dec 17 2025 Karel Zak <kzak@redhat.com> 2.37.4-21.el9_7
-- fix RHEL-134269 - libblkid: use snprintf() instead of sprintf()
-- fix RHEL-133955 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+* Mon Jan 19 2026 Karel Zak <kzak@redhat.com> 2.37.4-25
+- fix RHEL-132706 - use sysusers.d for uuidd
+
+* Mon Dec 15 2025 Karel Zak <kzak@redhat.com> 2.37.4-24
+- fix RHEL-133956 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
+
+* Mon Nov 10 2025 Karel Zak <kzak@redhat.com> 2.37.4-23
+- fix RHEL-123527 - mount: improve --all documentation
+- fix RHEL-123531 - libblkid: use snprintf() instead of sprintf()
+- fix RHEL-123536 - libfdisk: (dos) fix off-by-one in maximum last sector calculation
+
+* Mon Oct 13 2025 Karel Zak <kzak@redhat.com> 2.37.4-22
+- fix RHEL-113638 - lscpu: update ARM identifiers
+- fix RHEL-108386 - libblkid: (jmicron_raid) backport checksum verification
 
 * Thu Jan 16 2025 Karel Zak <kzak@redhat.com> 2.37.4-21
 - fix RHEL-56354 - lib/timeutils: parse_timestamp: fix second parsing
