@@ -1,0 +1,813 @@
+From 7f66fc529eb0231d933fdd5128f61a32d1c43baa Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 18:23:05 +0200
+Subject: libmount: pin the mount target for non-root users [CVE-2026-53613,
+ CVE-2026-53612]
+
+The target of a non-root mount always comes from fstab, but any
+component of that path may be a symlink the user controls.
+prepare_target() resolved it with mnt_resolve_path(), which follows
+symlinks with root privileges, so the mount could be redirected:
+
+	fstab:  /dev/sdb1 /mnt/usb vfat user,noauto 0 0
+	user:   rmdir /mnt/usb; ln -s /etc /mnt/usb
+	result: mount lands on /etc
+
+For restricted contexts the target is now opened as it comes from fstab
+with ul_open_no_symlinks() (openat2(RESOLVE_NO_SYMLINKS)), so a symlink
+anywhere in the path is refused by the kernel, and the name is read back
+from /proc/self/fd/<fd>.  The name is symlink free and normalized, and
+it is the very name the kernel later reports in mountinfo, which is what
+utab and non-root umount need.  This also means that a symlink in the
+target path of an fstab entry is no longer usable by non-root users,
+root has to write the real path.
+
+The pinned FD is then used instead of the path by everything which
+touches the target afterwards, so the path is never resolved for the
+second time:
+
+ * the new mount API attaches to the FD with MOVE_MOUNT_T_EMPTY_PATH,
+
+ * classic mount(2) and the bind/move source use the /proc/self/fd/<fd>
+   magic link, which the kernel follows directly to the pinned
+   directory; there is a fallback to the plain path when /proc is not
+   available,
+
+ * X-mount.owner=, X-mount.group= and X-mount.mode= use
+   fchownat(fd, "", ..., AT_EMPTY_PATH) and chmod() on the FD name
+   instead of the target path,
+
+ * X-mount.idmap= detaches the cloned mount and attaches the idmapped
+   one through the FD.
+
+Once the filesystem is attached the FD has to be re-opened, so that it
+refers to the root of the new mount and not to the directory covered by
+it.  This is done by the new mnt_context_finalize_target(), which also
+stores the mount ID to the utab entry.  do_mount() returned directly
+from exec_helper(), so for an external mount.<type> helper the FD stayed
+as it was pinned before anything was mounted and the MNT_STAGE_POST
+hooks worked with the underlying directory -- X-mount.owner= and friends
+then modified the mount point itself and the change survived umount.
+Finalize the target for a successful helper too.
+
+Backport notes:
+
+ * The patches are taken from the upstream stable/v2.42 branch; each of
+   the commits referenced below records the corresponding master commit
+   in its own message.
+
+ * The mount ID *verification* of the re-opened target (upstream
+   646fb6660 and the related hunks of 472cc3fb2 and 70dae206e) is not
+   backported.  This branch has no unique mount ID (STATX_MNT_ID_UNIQUE
+   is v6.8+ and fs->uniq_id does not exist here), and the reusable
+   32-bit STATX_MNT_ID is not a safe identity check -- a mismatch would
+   umount a mount we cannot account for.  The ID *fetch* is kept,
+   because this branch uses fs->id to correlate utab with mountinfo.
+
+ * mnt_id_from_fd(), mnt_id_from_path() and mnt_fs_fetch_ids() are
+   backported as the id-only variants (no uniq_id).  They are internal;
+   libmount.sym has a local: section, so unlisted symbols stay hidden
+   and there is no ABI change.
+
+ * b3879c50b is not applicable, its hunks are already covered here.
+
+ * The pin failure is reported by DBG() only; this branch has no
+   mnt_context_sprintf_mesg() and the message would not be printed by
+   mnt_context_get_mount_excode() on the preparation path anyway.  The
+   user sees the kernel error -- "mount failed: Too many levels of
+   symbolic links" for a symlinked target.
+
+ * mnt_context_syscall_save_status(), mnt_fs_mark_attached(),
+   mnt_fs_mark_moved(), mnt_context_read_mesgs() and DBG_OBJ() do not
+   exist here; the hunks are rewritten to the idioms of this branch.
+
+CVE-2026-53613
+CVE-2026-53612
+
+Reported-by: Xinyao Hu <ctf_0x01@foxmail.com>
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 0d3d55975aa3492c62fd345eac38f41cd166c0b0)
+(cherry picked from commit d0c5adaeb3a3d823aba1377794de8f009b8152cc)
+(cherry picked from commit bc43adb278d45be46964abc4e7bb06e0de210426)
+(cherry picked from commit 472cc3fb2d4d47cca7aab2e0b59eb3fb8a9359ec)
+(cherry picked from commit 85d16b341f7232c9dbb4884b632e1e956584bee9)
+(cherry picked from commit 70dae206e8fd3f7dbc8a920e1e243568943bb73f)
+---
+ libmount/src/context.c           | 102 +++++++++++++++++++++++++++++++
+ libmount/src/context_mount.c     |  75 +++++++++++++++++++++--
+ libmount/src/fs.c                |  26 ++++++++
+ libmount/src/hook_idmap.c        |  52 +++++++++++++++-
+ libmount/src/hook_mount.c        |  39 ++++++------
+ libmount/src/hook_mount_legacy.c |  74 +++++++++++++++++++++-
+ libmount/src/hook_owner.c        |  35 ++++++++---
+ libmount/src/mountP.h            |  11 ++++
+ libmount/src/utils.c             |  38 ++++++++++++
+ sys-utils/mount.8.adoc           |   4 ++
+ 10 files changed, 423 insertions(+), 33 deletions(-)
+
+diff --git a/libmount/src/context.c b/libmount/src/context.c
+index 2e94d9f68..fef26f549 100644
+--- a/libmount/src/context.c
++++ b/libmount/src/context.c
+@@ -37,6 +37,7 @@
+  */
+ 
+ #include "mountP.h"
++#include "fileutils.h"
+ #include "strutils.h"
+ #include "namespace.h"
+ #include "match.h"
+@@ -67,6 +68,7 @@ struct libmnt_context *mnt_new_context(void)
+ 	cxt->ns_orig.fd = -1;
+ 	cxt->ns_tgt.fd = -1;
+ 	cxt->ns_cur = &cxt->ns_orig;
++	cxt->fd_target = -1;
+ 
+ 	cxt->map_linux = mnt_get_builtin_optmap(MNT_LINUX_MAP);
+ 	cxt->map_userspace = mnt_get_builtin_optmap(MNT_USERSPACE_MAP);
+@@ -173,6 +175,7 @@ int mnt_reset_context(struct libmnt_context *cxt)
+ 	cxt->map_userspace = mnt_get_builtin_optmap(MNT_USERSPACE_MAP);
+ 
+ 	mnt_context_reset_status(cxt);
++	mnt_context_close_target_fd(cxt);
+ 	mnt_context_deinit_hooksets(cxt);
+ 
+ 	if (cxt->table_fltrcb)
+@@ -398,6 +401,105 @@ int mnt_context_is_restricted(struct libmnt_context *cxt)
+ 	return cxt->restricted;
+ }
+ 
++int mnt_context_target_fd_required(struct libmnt_context *cxt)
++{
++	return mnt_context_is_restricted(cxt);
++}
++
++/* re-open the pinned target, see mnt_context_finalize_target() */
++static int reopen_target_fd(struct libmnt_context *cxt)
++{
++	DBG(CXT, ul_debugobj(cxt,"reopen target fd"));
++
++	mnt_context_close_target_fd(cxt);
++	if (mnt_context_get_target_fd(cxt) < 0)
++		return -errno;
++
++	return 0;
++}
++
++/* store the mount ID to the utab entry, see mnt_context_finalize_target() */
++static int update_mount_ids(struct libmnt_context *cxt)
++{
++	struct libmnt_fs *fs;
++
++	if (!cxt->fs)
++		return 0;
++
++	/* The ID is known when the new mount API has been used, the kernel
++	 * gives us a FD to the not yet attached mount. Classic mount(2) and
++	 * external mount helpers provide no such handle, so read the ID from
++	 * the new mount point (cxt->fd_target, or the target path if the FD is
++	 * not pinned). Note that this is not 100% robust -- another process
++	 * could overmount the target in the meantime. */
++	if (cxt->fs->id <= 0)
++		mnt_fs_fetch_ids(cxt->fs, cxt->fd_target);
++
++	if (!cxt->fs->id)
++		return 0;
++	if (!cxt->update || !mnt_update_is_ready(cxt->update))
++		return 0;
++
++	fs = mnt_update_get_fs(cxt->update);
++	if (fs)
++		fs->id = cxt->fs->id;
++
++	return 0;
++}
++
++/*
++ * Called by the mount code when the filesystem has been attached to the
++ * target.
++ *
++ * For non-root users it re-opens the pinned target FD, so it refers to the
++ * root of the new mount rather than to the directory covered by the mount.
++ *
++ * It also reads the mount ID when the mount operation has not provided it,
++ * and stores the ID to the utab entry.
++ */
++int mnt_context_finalize_target(struct libmnt_context *cxt)
++{
++	int rc = 0;
++
++	assert(cxt);
++
++	if (mnt_context_target_fd_required(cxt))
++		rc = reopen_target_fd(cxt);
++	if (rc == 0)
++		rc = update_mount_ids(cxt);
++
++	return rc;
++}
++
++int mnt_context_get_target_fd(struct libmnt_context *cxt)
++{
++	assert(cxt);
++
++	if (cxt->fd_target < 0) {
++		const char *target = mnt_fs_get_target(cxt->fs);
++
++		if (!target) {
++			/* keep errno usable for callers which use -errno */
++			errno = EINVAL;
++			return -EINVAL;
++		}
++		cxt->fd_target = ul_open_no_symlinks(target,
++					O_PATH | O_CLOEXEC, 0);
++		DBG(CXT, ul_debugobj(cxt,"open target fd=%d [%s]",
++					cxt->fd_target, target));
++	}
++	return cxt->fd_target;
++}
++
++void mnt_context_close_target_fd(struct libmnt_context *cxt)
++{
++	assert(cxt);
++
++	if (cxt->fd_target >= 0)
++		close(cxt->fd_target);
++	cxt->fd_target = -1;
++}
++
+ /**
+  * mnt_context_force_unrestricted:
+  * @cxt: mount context
+diff --git a/libmount/src/context_mount.c b/libmount/src/context_mount.c
+index f9d610f77..13b067895 100644
+--- a/libmount/src/context_mount.c
++++ b/libmount/src/context_mount.c
+@@ -20,6 +20,7 @@
+ 
+ #include "mountP.h"
+ #include "strutils.h"
++#include "fileutils.h"
+ 
+ #if defined(HAVE_SMACK)
+ static int is_option(const char *name, const char *const *names)
+@@ -516,8 +517,28 @@ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ 			return rc;
+ 	}
+ 
+-	if (cxt->helper)
+-		return exec_helper(cxt);
++	if (cxt->helper) {
++		rc = exec_helper(cxt);
++
++		/* The helper has done the mount, so the target FD pinned by
++		 * prepare_target() still refers to the directory which is
++		 * covered by the new mount now. Re-open it, otherwise the
++		 * MNT_STAGE_POST hooks would work with the underlying
++		 * directory -- X-mount.owner=, X-mount.group= and
++		 * X-mount.mode= would modify the mount point itself and the
++		 * change would survive umount.
++		 *
++		 * The helper mounts outside of libmount and gives us no handle
++		 * to the new mount, so there is no ID for utab either;
++		 * mnt_context_finalize_target() reads the ID from the new
++		 * mount point, the same way as for classic mount(2).
++		 */
++		if (rc == 0
++		    && mnt_context_helper_executed(cxt)
++		    && mnt_context_get_helper_status(cxt) == 0)
++			rc = mnt_context_finalize_target(cxt);
++		return rc;
++	}
+ 
+ 	if (try_type) {
+ 		ol = mnt_context_get_optlist(cxt);
+@@ -670,6 +691,48 @@ static int do_mount_by_pattern(struct libmnt_context *cxt, const char *pattern)
+ 	return rc;
+ }
+ 
++/*
++ * Pin the target for non-root users.
++ *
++ * The target comes from fstab, but any component of the path may be a symlink
++ * controlled by the user. mnt_resolve_path() would follow it with root
++ * privileges and the mount would end up somewhere else. Open the path as it is
++ * with RESOLVE_NO_SYMLINKS instead, and then use the name the kernel gives to
++ * the pinned directory as the canonical target.
++ *
++ * The name is symlink free and normalized, and it's the same name the kernel
++ * later reports in mountinfo -- utab and non-root umount rely on that.
++ */
++static int pin_target(struct libmnt_context *cxt)
++{
++	const char *tgt;
++	char *path;
++	int fd, rc = 0;
++
++	fd = mnt_context_get_target_fd(cxt);
++	if (fd < 0) {
++		/* note that the kernel refuses a symlink in the path with
++		 * ELOOP, mount(8) reports it as "mount failed: Too many
++		 * levels of symbolic links" */
++		rc = -errno;
++		DBG(CXT, ul_debugobj(cxt, "failed to pin target [rc=%d]", rc));
++		return rc;
++	}
++
++	path = ul_fd_get_path(fd);
++	if (!path) {
++		DBG(CXT, ul_debugobj(cxt, "failed to read pinned target path"));
++		return -errno;
++	}
++
++	tgt = mnt_fs_get_target(cxt->fs);
++	if (!tgt || strcmp(path, tgt) != 0)
++		rc = mnt_fs_set_target(cxt->fs, path);
++
++	free(path);
++	return rc;
++}
++
+ static int prepare_target(struct libmnt_context *cxt)
+ {
+ 	const char *tgt, *prefix;
+@@ -713,8 +776,9 @@ static int prepare_target(struct libmnt_context *cxt)
+ 	if (!ns_old)
+ 		return -MNT_ERR_NAMESPACE;
+ 
+-	/* canonicalize the path */
+-	if (rc == 0) {
++	/* canonicalize the path; for non-root users this is done later from
++	 * the pinned target FD, see pin_target() */
++	if (rc == 0 && !mnt_context_target_fd_required(cxt)) {
+ 		struct libmnt_cache *cache = mnt_context_get_cache(cxt);
+ 
+ 		if (cache) {
+@@ -727,6 +791,9 @@ static int prepare_target(struct libmnt_context *cxt)
+ 	if (rc == 0)
+ 		rc = mnt_context_call_hooks(cxt, MNT_STAGE_PREP_TARGET);
+ 
++	if (rc == 0 && mnt_context_target_fd_required(cxt))
++		rc = pin_target(cxt);
++
+ 	if (!mnt_context_switch_ns(cxt, ns_old))
+ 		return -MNT_ERR_NAMESPACE;
+ 
+diff --git a/libmount/src/fs.c b/libmount/src/fs.c
+index 26f2c69e9..409a48eb0 100644
+--- a/libmount/src/fs.c
++++ b/libmount/src/fs.c
+@@ -1367,6 +1367,32 @@ int mnt_fs_get_id(struct libmnt_fs *fs)
+ 	return fs ? fs->id : -EINVAL;
+ }
+ 
++/*
++ * Fetch the mount ID from kernel via statx(). Uses @fd (AT_EMPTY_PATH) if >= 0,
++ * otherwise uses fs->target path.
++ *
++ * Returns: 0 on success, <0 on error.
++ */
++int mnt_fs_fetch_ids(struct libmnt_fs *fs, int fd)
++{
++	int id = 0, rc;
++
++	if (!fs)
++		return -EINVAL;
++	if (fd < 0 && !mnt_fs_get_target(fs))
++		return -EINVAL;
++
++	if (fd >= 0)
++		rc = mnt_id_from_fd(fd, &id);
++	else
++		rc = mnt_id_from_path(mnt_fs_get_target(fs), &id);
++
++	if (rc == 0)
++		fs->id = id;
++
++	return rc;
++}
++
+ /**
+  * mnt_fs_get_parent_id:
+  * @fs: /proc/self/mountinfo entry
+diff --git a/libmount/src/hook_idmap.c b/libmount/src/hook_idmap.c
+index 9b2425a77..8ec05682a 100644
+--- a/libmount/src/hook_idmap.c
++++ b/libmount/src/hook_idmap.c
+@@ -26,6 +26,7 @@
+ #include "all-io.h"
+ #include "namespace.h"
+ #include "mount-api-utils.h"
++#include "fileutils.h"
+ 
+ #include "mountP.h"
+ 
+@@ -349,10 +350,55 @@ static int hook_mount_post(
+ 
+ 	/* Attach the idmapped mount. */
+ 	if (is_private) {
+-		/* Unmount the old, non-idmapped mount we just cloned and idmapped. */
+-		umount2(target, MNT_DETACH);
++		unsigned int mmflags = MOVE_MOUNT_F_EMPTY_PATH;
+ 
+-		rc = move_mount(fd_tree, "", -1, target, MOVE_MOUNT_F_EMPTY_PATH);
++		/* Unmount the old, non-idmapped mount we just cloned and
++		 * idmapped, and attach the clone to the target. */
++		if (mnt_context_target_fd_required(cxt)) {
++			char fdpath[UL_FDPATH_BUFSIZ];
++			int fd_tgt = mnt_context_get_target_fd(cxt);
++
++			if (fd_tgt < 0) {
++				rc = -errno;
++				goto done;
++			}
++
++			/* The pinned FD refers to the root of the mount we are
++			 * going to detach, so umount2() through the FD rather
++			 * than resolve the target path for the second time.
++			 * See reopen_target_fd() for the umount2() lookup
++			 * semantics. */
++			if (ul_fd_mkpath(fdpath, sizeof(fdpath), fd_tgt))
++				umount2(fdpath, MNT_DETACH);
++			else
++				umount2(target, MNT_DETACH);
++
++			/* The FD now points into the detached mount and
++			 * move_mount() would fail with ENOENT, re-open it to
++			 * get the mount point directory again. */
++			mnt_context_close_target_fd(cxt);
++			fd_tgt = mnt_context_get_target_fd(cxt);
++			if (fd_tgt < 0) {
++				rc = -errno;
++				goto done;
++			}
++
++			mmflags |= MOVE_MOUNT_T_EMPTY_PATH;
++			rc = move_mount(fd_tree, "", fd_tgt, "", mmflags);
++		} else {
++			umount2(target, MNT_DETACH);
++			rc = move_mount(fd_tree, "", AT_FDCWD, target, mmflags);
++		}
++
++		if (rc == 0) {
++			/* The mount at the target is the idmapped clone now.
++			 * The ID of the mount we have just replaced is obsolete,
++			 * read the new one from the clone so utab refers to the
++			 * mount which is really attached. */
++			mnt_fs_fetch_ids(cxt->fs, fd_tree);
++
++			rc = mnt_context_finalize_target(cxt);
++		}
+ 		if (rc)
+ 			DBG(HOOK, ul_debugobj(hs, " failed to set move mount"));
+ 	}
+diff --git a/libmount/src/hook_mount.c b/libmount/src/hook_mount.c
+index 67c50aa60..e81cf58a8 100644
+--- a/libmount/src/hook_mount.c
++++ b/libmount/src/hook_mount.c
+@@ -322,21 +322,10 @@ static int hook_create_mount(struct libmnt_context *cxt,
+ 		/* cleanup after fail (libmount may only try the FS type) */
+ 		close_sysapi_fds(api);
+ 
+-#if defined(HAVE_STATX) && defined(HAVE_STRUCT_STATX) && defined(HAVE_STRUCT_STATX_STX_MNT_ID)
+-	if (!rc && cxt->fs) {
+-		struct statx st;
+-
+-		rc = statx(api->fd_tree, "", AT_EMPTY_PATH, STATX_MNT_ID, &st);
+-		if (rc == 0) {
+-			cxt->fs->id = (int) st.stx_mnt_id;
+-			if (cxt->update) {
+-				struct libmnt_fs *fs = mnt_update_get_fs(cxt->update);
+-				if (fs)
+-					fs->id = cxt->fs->id;
+-			}
+-		}
+-	}
+-#endif
++	/* Read the ID of the new mount while it's still detached, see
++	 * mnt_context_finalize_target() which stores it to utab. */
++	if (!rc && cxt->fs)
++		mnt_fs_fetch_ids(cxt->fs, api->fd_tree);
+ 
+ done:
+ 	DBG(HOOK, ul_debugobj(hs, "create FS done [rc=%d, id=%d]", rc, cxt->fs ? cxt->fs->id : -1));
+@@ -542,10 +531,26 @@ static int hook_attach_target(struct libmnt_context *cxt,
+ 		umount2(target, MNT_DETACH);
+ 	}
+ 
+-	rc = move_mount(api->fd_tree, "", AT_FDCWD, target, MOVE_MOUNT_F_EMPTY_PATH);
++	/* fd_target is open in restricted mode (see prepare_target()) */
++	if (mnt_context_target_fd_required(cxt)) {
++		int fd = mnt_context_get_target_fd(cxt);
++
++		if (fd < 0)
++			return -errno;
++		rc = move_mount(api->fd_tree, "", fd, "",
++				MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH);
++	} else
++		rc = move_mount(api->fd_tree, "", AT_FDCWD, target,
++				MOVE_MOUNT_F_EMPTY_PATH);
++
+ 	hookset_set_syscall_status(cxt, "move_mount", rc == 0);
+ 
+-	return rc == 0 ? 0 : -errno;
++	if (rc != 0)
++		return -errno;
++
++	/* re-open to point to the mounted filesystem root and read the mount
++	 * ID for utab; the function already returns a negative error code */
++	return mnt_context_finalize_target(cxt);
+ }
+ 
+ static inline int fsopen_is_supported(void)
+diff --git a/libmount/src/hook_mount_legacy.c b/libmount/src/hook_mount_legacy.c
+index 56e92b05d..9ceda402b 100644
+--- a/libmount/src/hook_mount_legacy.c
++++ b/libmount/src/hook_mount_legacy.c
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "mountP.h"
++#include "fileutils.h"
+ 
+ /* mount(2) flags for additional propagation changes etc. */
+ struct hook_data {
+@@ -207,6 +208,8 @@ static int hook_mount(struct libmnt_context *cxt,
+ 	unsigned long flags = 0;
+ 	struct libmnt_optlist *ol = NULL;
+ 	const char *src, *target, *type, *options = NULL;
++	char tgtfdpath[UL_FDPATH_BUFSIZ], srcfdpath[UL_FDPATH_BUFSIZ];
++	int fd_src = -1;
+ 
+ 	src = mnt_fs_get_srcpath(cxt->fs);
+ 	target = mnt_fs_get_target(cxt->fs);
+@@ -220,6 +223,31 @@ static int hook_mount(struct libmnt_context *cxt,
+ 	if (!src)
+ 		src = "none";
+ 
++	/* For non-root users mount(2) the already pinned target FD rather
++	 * than the path. mount(2) resolves the path for the second time and
++	 * the result does not have to be the directory we have verified. The
++	 * kernel follows the /proc/ link directly to the pinned directory,
++	 * and mountinfo still reports the real mountpoint path.
++	 *
++	 * Fallback to the path if /proc is not available; mount(2) is racy by
++	 * design, let's harden it where we can.
++	 */
++	if (mnt_context_target_fd_required(cxt)) {
++		int fd = mnt_context_get_target_fd(cxt);
++		struct stat st;
++
++		if (fd < 0)
++			return -errno;
++		if (!ul_fd_mkpath(tgtfdpath, sizeof(tgtfdpath), fd))
++			return -errno;
++
++		if (stat(tgtfdpath, &st) == 0)
++			target = tgtfdpath;
++		else
++			DBG(HOOK, ul_debugobj(hs, "  %s not accessible, "
++					"using target path", tgtfdpath));
++	}
++
+ 	/* FS specific mount options/data */
+ 	if (cxt->flags & MNT_FL_MOUNTDATA)
+ 		options = cxt->mountdata;
+@@ -233,6 +261,38 @@ static int hook_mount(struct libmnt_context *cxt,
+ 	if (rc)
+ 		return rc;
+ 
++	/* The source of a bind or move operation is a pathname resolved by
++	 * mount(2) too, so for non-root users pin it in the same way as the
++	 * target. Otherwise a symlink in the source path is followed and the
++	 * kernel attaches something else than the directory from fstab.
++	 *
++	 * This is what the new mount API already does for the very same
++	 * operations, see init_sysapi() and mnt_context_open_tree() where
++	 * open_tree() is called with RESOLVE_NO_SYMLINKS. A /dev/ source is
++	 * not affected, such a path is canonicalized and verified to stay in
++	 * /dev/ by mnt_context_prepare_srcpath() before we get here.
++	 */
++	if (mnt_context_target_fd_required(cxt)
++	    && (flags & (MS_BIND | MS_MOVE))
++	    && !(flags & MS_REMOUNT)
++	    && mnt_fs_get_srcpath(cxt->fs)) {
++		struct stat st;
++
++		fd_src = ul_open_no_symlinks(src, O_PATH | O_CLOEXEC, 0);
++		if (fd_src < 0)
++			return -errno;
++		if (!ul_fd_mkpath(srcfdpath, sizeof(srcfdpath), fd_src)) {
++			rc = -errno;
++			goto done;
++		}
++
++		if (stat(srcfdpath, &st) == 0)
++			src = srcfdpath;
++		else
++			DBG(HOOK, ul_debugobj(hs, "  %s not accessible, "
++					"using source path", srcfdpath));
++	}
++
+ 	DBG(HOOK, ul_debugobj(hs, "  mount(2) "
+ 		"[source=%s, target=%s, type=%s, flags=0x%08lx, options=%s]",
+ 		src, target, type, flags,
+@@ -245,10 +305,22 @@ static int hook_mount(struct libmnt_context *cxt,
+ 		DBG(HOOK, ul_debugobj(hs, "  mount(2) failed [errno=%d %m]",
+ 					-cxt->syscall_status));
+ 		rc = -cxt->syscall_status;
+-		return rc;
++		goto done;
+ 	}
+ 
+ 	cxt->syscall_status = 0;
++
++	/* Re-open to point to the mounted filesystem root and read the mount
++	 * ID for utab.
++	 *
++	 * Note that mount(2) returns no handle to the new mount, so the ID has
++	 * to be read from the mount point. This is a limitation of the old
++	 * API, the new mount API knows the ID from the detached tree FD before
++	 * it's attached. */
++	rc = mnt_context_finalize_target(cxt);
++done:
++	if (fd_src >= 0)
++		close(fd_src);
+ 	return rc;
+ }
+ 
+diff --git a/libmount/src/hook_owner.c b/libmount/src/hook_owner.c
+index 11b238c89..7aa2cbe14 100644
+--- a/libmount/src/hook_owner.c
++++ b/libmount/src/hook_owner.c
+@@ -17,6 +17,7 @@
+ #include <sched.h>
+ 
+ #include "mountP.h"
++#include "pathnames.h"
+ #include "fileutils.h"
+ 
+ struct hook_data {
+@@ -48,7 +49,7 @@ static int hook_post(
+ {
+ 	struct hook_data *hd = (struct hook_data *) data;
+ 	const char *target;
+-	int rc = 0;
++	int rc = 0, fd;
+ 
+ 	assert(cxt);
+ 
+@@ -59,18 +60,36 @@ static int hook_post(
+ 	if (!target)
+ 		return 0;
+ 
++	/* fd_target is pinned in restricted mode (see prepare_target()) and
++	 * re-opened once the filesystem is attached, so it refers to the root
++	 * of the new mount and not to the directory covered by it; for root
++	 * open it here to keep chmod/chown fd-based too */
++	if (mnt_context_target_fd_required(cxt))
++		fd = mnt_context_get_target_fd(cxt);
++	else
++		fd = open(target, O_PATH | O_CLOEXEC);
++
++	if (fd < 0)
++		return -MNT_ERR_CHMOD;
++
+ 	if (hd->owner != (uid_t) -1 || hd->group != (uid_t) -1) {
+-		DBG(CXT, ul_debugobj(cxt, " lchown(%s, %u, %u)", target, hd->owner, hd->group));
+-		if (lchown(target, hd->owner, hd->group) == -1)
+-			return -MNT_ERR_CHOWN;
++		DBG(CXT, ul_debugobj(cxt, " fchownat(%s, %u, %u)", target, hd->owner, hd->group));
++		if (fchownat(fd, "", hd->owner, hd->group, AT_EMPTY_PATH) == -1)
++			rc = -MNT_ERR_CHOWN;
+ 	}
+ 
+-	if (hd->mode != (mode_t) -1) {
+-		DBG(CXT, ul_debugobj(cxt, " chmod(%s, %04o)", target, hd->mode));
+-		if (chmod(target, hd->mode) == -1)
+-			return -MNT_ERR_CHMOD;
++	if (!rc && hd->mode != (mode_t) -1) {
++		char buf[sizeof(_PATH_PROC_FDDIR) + 1 + sizeof(stringify_value(INT_MAX))];
++
++		snprintf(buf, sizeof(buf), _PATH_PROC_FDDIR "/%d", fd);
++		DBG(CXT, ul_debugobj(cxt, " chmod(%s, %04o)", buf, hd->mode));
++		if (chmod(buf, hd->mode) == -1)
++			rc = -MNT_ERR_CHMOD;
+ 	}
+ 
++	if (!mnt_context_target_fd_required(cxt))
++		close(fd);
++
+ 	return rc;
+ }
+ 
+diff --git a/libmount/src/mountP.h b/libmount/src/mountP.h
+index f43781627..e697a84b8 100644
+--- a/libmount/src/mountP.h
++++ b/libmount/src/mountP.h
+@@ -105,6 +105,9 @@ extern int is_file_empty(const char *name);
+ extern int mnt_is_readonly(const char *path)
+ 			__attribute__((nonnull));
+ 
++extern int mnt_id_from_fd(int fd, int *id);
++extern int mnt_id_from_path(const char *path, int *id);
++
+ extern int mnt_parse_offset(const char *str, size_t len, uintmax_t *res);
+ 
+ extern int mnt_chdir_to_parent(const char *target, char **filename);
+@@ -443,6 +446,8 @@ struct libmnt_context
+ 	unsigned int	has_selinux_opt : 1;	/* temporary for broken fsconfig() syscall */
+ 	unsigned int    force_clone : 1;	/* OPEN_TREE_CLONE */
+ 
++	int		fd_target;	/* pinned target fd (RESOLVE_NO_SYMLINKS) */
++
+ 	struct list_head	hooksets_datas;	/* global hooksets data */
+ 	struct list_head	hooksets_hooks;	/* global hooksets data */
+ };
+@@ -612,6 +617,7 @@ extern int mnt_opt_is_sepnodata(struct libmnt_opt *opt);
+ 
+ /* fs.c */
+ extern int mnt_fs_follow_optlist(struct libmnt_fs *fs, struct libmnt_optlist *ol);
++extern int mnt_fs_fetch_ids(struct libmnt_fs *fs, int fd);
+ extern struct libmnt_fs *mnt_copy_mtab_fs(struct libmnt_fs *fs);
+ extern int __mnt_fs_set_source_ptr(struct libmnt_fs *fs, char *source)
+ 			__attribute__((nonnull(1)));
+@@ -640,6 +646,11 @@ extern int mnt_context_prepare_update(struct libmnt_context *cxt);
+ extern int mnt_context_merge_mflags(struct libmnt_context *cxt);
+ extern int mnt_context_update_tabs(struct libmnt_context *cxt);
+ 
++extern int mnt_context_target_fd_required(struct libmnt_context *cxt);
++extern int mnt_context_get_target_fd(struct libmnt_context *cxt);
++extern void mnt_context_close_target_fd(struct libmnt_context *cxt);
++extern int mnt_context_finalize_target(struct libmnt_context *cxt);
++
+ extern int mnt_context_umount_setopt(struct libmnt_context *cxt, int c, char *arg);
+ extern int mnt_context_mount_setopt(struct libmnt_context *cxt, int c, char *arg);
+ 
+diff --git a/libmount/src/utils.c b/libmount/src/utils.c
+index 94a877cf0..bbaca3967 100644
+--- a/libmount/src/utils.c
++++ b/libmount/src/utils.c
+@@ -266,6 +266,44 @@ int mnt_is_readonly(const char *path)
+ 	return 0;
+ }
+ 
++#if defined(HAVE_STATX) && defined(HAVE_STRUCT_STATX) && defined(HAVE_STRUCT_STATX_STX_MNT_ID)
++static int get_mnt_id(	int fd, const char *path, int *id)
++{
++	int rc;
++	struct statx sx = { 0 };
++	int flags = AT_STATX_DONT_SYNC | AT_NO_AUTOMOUNT;
++
++	if (!path || !*path)
++		flags |= AT_EMPTY_PATH;
++
++	rc = statx(fd, path ? path : "", flags, STATX_MNT_ID, &sx);
++	if (rc)
++		return rc;
++
++	*id = sx.stx_mnt_id;
++	return 0;
++}
++#else /* HAVE_STATX && HAVE_STRUCT_STATX && HAVE_STRUCT_STATX_STX_MNT_ID */
++static int get_mnt_id(	int fd __attribute__((__unused__)),
++			const char *path __attribute__((__unused__)),
++			int *id __attribute__((__unused__)))
++{
++	return -ENOSYS;
++}
++#endif
++
++/* Converts open file descriptor to the classic mount ID (STATX_MNT_ID) */
++int mnt_id_from_fd(int fd, int *id)
++{
++	return get_mnt_id(fd, NULL, id);
++}
++
++/* Converts @path to the classic mount ID (STATX_MNT_ID) */
++int mnt_id_from_path(const char *path, int *id)
++{
++	return get_mnt_id(-1, path, id);
++}
++
+ /**
+  * mnt_mangle:
+  * @str: string
+diff --git a/sys-utils/mount.8.adoc b/sys-utils/mount.8.adoc
+index de2461f8a..4b135b117 100644
+--- a/sys-utils/mount.8.adoc
++++ b/sys-utils/mount.8.adoc
+@@ -186,6 +186,10 @@ For more details, see *fstab*(5). Only the user that mounted a filesystem can un
+ 
+ The *user* mount option is accepted if no username is specified. If used in the format *user=someone*, the option is silently ignored and visible only for external mount helpers (/sbin/mount.<type>) for compatibility with some network filesystems.
+ 
++For unprivileged users the mount target from _fstab_ is opened before the filesystem is attached and the mount operation uses this file descriptor rather than the path, so the path is not resolved for the second time by the kernel. Symbolic links are not followed in the target path at all, a _fstab_ entry with a symbolic link in the mount point path is unusable for unprivileged users and the mount fails.
++
++WARNING: When the new mount API is not available (Linux before 5.2, or *mount*(8) compiled without the support for it), the legacy *mount*(2) syscall is used. In this case the pinned target is referenced by a _/proc/self/fd/_ path, which requires a mounted _/proc_ filesystem. Without _/proc_ the target path is resolved by the kernel again and the inherent time-of-check-to-time-of-use (TOCTOU) window between the verification and the mount operation remains; if an ancestor directory of the mount target is writable by the unprivileged user, a path component could be swapped to redirect the mount to an unintended location. Administrators should ensure that mount target paths for *user* mounts do not traverse directories writable by unprivileged users.
++
+ === Bind mount operation
+ 
+ Remount part of the file hierarchy somewhere else. The call is:
+-- 
+2.55.0
+

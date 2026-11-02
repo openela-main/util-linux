@@ -1,0 +1,207 @@
+From 29f062309053d268b55b768b52cec468bcc03703 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 18:55:19 +0200
+Subject: libmount: restrict the mount source for non-root users
+ [CVE-2026-78410]
+
+Two ways in which the source of a restricted (non-root) mount was
+resolved with root privileges, both of them following symlinks the
+unprivileged user controls:
+
+ * mnt_context_prepare_srcpath() canonicalized every source with
+   mnt_resolve_path(), which is realpath() running as euid 0.  A disk
+   image in a user writable directory could therefore be swapped for a
+   symlink to anything.  Only /dev/ paths are canonicalized now -- that
+   is what /dev/cdrom -> /dev/sr0 needs -- and the result has to stay
+   in /dev/, otherwise the original fstab path is kept.  For all other
+   sources the fstab path is used as it is; the symlink protection is
+   done at open time by RESOLVE_NO_SYMLINKS.
+
+ * mnt_context_open_tree() called open_tree(AT_FDCWD, path, ...), which
+   resolves the path in the kernel and follows symlinks in every
+   component.  For a bind or move operation the fstab authorized source
+   could thus be redirected to an arbitrary directory.  Combined with
+   X-mount.owner=, X-mount.group= or X-mount.mode= this is an ownership
+   and permission modification primitive on paths the user was never
+   authorized for, because the post-mount hook applies chown/chmod with
+   root privileges.
+
+The new mnt_open_tree() helper pins the path with
+openat2(RESOLVE_NO_SYMLINKS) first and then clones it with
+open_tree(fd, "", AT_EMPTY_PATH).  Restricted callers ask for the
+resolve flags, root passes resolve=0 and keeps the plain open_tree()
+behaviour.  The fallback open_tree() in hook_idmap.c is converted too.
+
+This completes the pinning started for the target in the previous
+commit; the legacy mount(2) path already pins the bind/move source
+there.
+
+Backport notes:
+
+ * The patches are taken from the upstream stable/v2.42 branch; each of
+   the commits referenced below records the corresponding master commit
+   in its own message.
+
+ * ul_startswith() is still called startswith() here.
+
+ * utils.c newly needs open_tree(), so it includes mount-api-utils.h.
+   Upstream relies on the declaration coming from glibc's <sys/mount.h>;
+   the explicit include keeps the build working with older glibc, the
+   same way hook_mount.c does it.
+
+ * a323dddbc is a no-op here, hook_idmap.c already includes
+   fileutils.h.
+
+ * The upstream mount.8.adoc hunk does not apply -- this branch has no
+   X-mount.nocanonicalize documentation.  The behaviour change is
+   described in the "user" section instead, next to the target pinning
+   note added by the previous commit.
+
+CVE-2026-78410
+
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 90a1f3b5b134b775dd30a46155064731ba40c519)
+(cherry picked from commit 6051830a27a852fed92ebd8493e57aa3d5d9cf18)
+(cherry picked from commit 9a8d0d60c55d3a55f89f6f75a17bae31bc5ee1c6)
+(cherry picked from commit a323dddbcd1ed05a10e7e870b3e1a48b4ed44a43)
+---
+ libmount/src/context.c    | 21 +++++++++++++++++++--
+ libmount/src/hook_idmap.c |  6 ++++--
+ libmount/src/mountP.h     |  2 ++
+ libmount/src/utils.c      | 29 +++++++++++++++++++++++++++++
+ sys-utils/mount.8.adoc    |  2 ++
+ 5 files changed, 56 insertions(+), 4 deletions(-)
+
+diff --git a/libmount/src/context.c b/libmount/src/context.c
+index fef26f549..647e42588 100644
+--- a/libmount/src/context.c
++++ b/libmount/src/context.c
+@@ -1926,7 +1926,9 @@ int mnt_context_open_tree(struct libmnt_context *cxt, const char *path, unsigned
+ 	DBG(CXT, ul_debugobj(cxt, "open_tree(path=%s%s%s)", path,
+ 				oflg & OPEN_TREE_CLONE ? " clone" : "",
+ 				oflg & AT_RECURSIVE ? " recursive" : ""));
+-	fd = open_tree(AT_FDCWD, path, oflg);
++
++	fd = mnt_open_tree(AT_FDCWD, path, oflg,
++			mnt_context_is_restricted(cxt) ? RESOLVE_NO_SYMLINKS : 0);
+ 	set_syscall_status(cxt, "open_tree", fd >= 0);
+ 
+ 	return fd;
+@@ -1989,7 +1991,22 @@ int mnt_context_prepare_srcpath(struct libmnt_context *cxt)
+ 		/*
+ 		 * Source is PATH (canonicalize)
+ 		 */
+-		path = mnt_resolve_path(src, cache);
++		if (mnt_context_is_restricted(cxt)) {
++			/* In restricted mode, only canonicalize /dev/
++			 * paths (e.g. /dev/cdrom -> /dev/sr0) and verify
++			 * the result stays in /dev/. For non-/dev/ paths
++			 * (e.g. disk images in user dirs), keep the
++			 * original fstab path -- symlink protection is
++			 * handled at open time by RESOLVE_NO_SYMLINKS.
++			 */
++			if (startswith(src, "/dev/")) {
++				path = mnt_resolve_path(src, cache);
++				if (path && !startswith(path, "/dev/"))
++					path = NULL;
++			}
++		} else
++			path = mnt_resolve_path(src, cache);
++
+ 		if (path && strcmp(path, src) != 0)
+ 			rc = mnt_fs_set_source(cxt->fs, path);
+ 	 }
+diff --git a/libmount/src/hook_idmap.c b/libmount/src/hook_idmap.c
+index 8ec05682a..8fbfa9829 100644
+--- a/libmount/src/hook_idmap.c
++++ b/libmount/src/hook_idmap.c
+@@ -331,9 +331,11 @@ static int hook_mount_post(
+ 	}
+ #endif
+ 	if (fd_tree < 0)
+-		fd_tree = open_tree(-1, target,
++		fd_tree = mnt_open_tree(AT_FDCWD, target,
+ 			    OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC |
+-			    (recursive ? AT_RECURSIVE : 0));
++			    (recursive ? AT_RECURSIVE : 0),
++			    mnt_context_is_restricted(cxt) ?
++				RESOLVE_NO_SYMLINKS : 0);
+ 	if (fd_tree < 0) {
+ 		DBG(HOOK, ul_debugobj(hs, " failed to open tree"));
+ 		return -MNT_ERR_IDMAP;
+diff --git a/libmount/src/mountP.h b/libmount/src/mountP.h
+index e697a84b8..28c076d92 100644
+--- a/libmount/src/mountP.h
++++ b/libmount/src/mountP.h
+@@ -705,6 +705,8 @@ static inline struct libmnt_sysapi *mnt_context_get_sysapi(struct libmnt_context
+ }
+ 
+ int mnt_context_open_tree(struct libmnt_context *cxt, const char *path, unsigned long mflg);
++int mnt_open_tree(int dirfd, const char *path, unsigned long flags,
++		  unsigned long long resolve);
+ 
+ #endif
+ 
+diff --git a/libmount/src/utils.c b/libmount/src/utils.c
+index bbaca3967..4357c97eb 100644
+--- a/libmount/src/utils.c
++++ b/libmount/src/utils.c
+@@ -32,6 +32,7 @@
+ #include "statfs_magic.h"
+ #include "sysfs.h"
+ #include "namespace.h"
++#include "mount-api-utils.h"
+ 
+ /*
+  * Return 1 if the file is not accessible or empty
+@@ -1327,6 +1328,34 @@ done:
+ 	return 1;
+ }
+ 
++#ifdef USE_LIBMOUNT_MOUNTFD_SUPPORT
++/*
++ * Open a mount tree, optionally pinning the path with openat2() first.
++ *
++ * When @resolve is non-zero, the path is resolved with openat2() using the
++ * given resolve flags, then the tree is opened with open_tree(AT_EMPTY_PATH).
++ * When @resolve is zero, open_tree() is called directly with the path.
++ */
++int mnt_open_tree(int dirfd, const char *path, unsigned long flags,
++		  unsigned long long resolve)
++{
++	if (resolve) {
++		int pin_fd, fd;
++
++		pin_fd = ul_openat_resolve(dirfd, path,
++					O_PATH | O_CLOEXEC, 0, resolve);
++		if (pin_fd < 0)
++			return pin_fd;
++
++		fd = open_tree(pin_fd, "", flags | AT_EMPTY_PATH);
++		close(pin_fd);
++		return fd;
++	}
++
++	return open_tree(dirfd, path, flags);
++}
++#endif /* USE_LIBMOUNT_MOUNTFD_SUPPORT */
++
+ #ifdef TEST_PROGRAM
+ static int test_match_fstype(struct libmnt_test *ts __attribute__((unused)),
+ 			     int argc, char *argv[])
+diff --git a/sys-utils/mount.8.adoc b/sys-utils/mount.8.adoc
+index 4b135b117..8ef21d5c6 100644
+--- a/sys-utils/mount.8.adoc
++++ b/sys-utils/mount.8.adoc
+@@ -188,6 +188,8 @@ The *user* mount option is accepted if no username is specified. If used in the
+ 
+ For unprivileged users the mount target from _fstab_ is opened before the filesystem is attached and the mount operation uses this file descriptor rather than the path, so the path is not resolved for the second time by the kernel. Symbolic links are not followed in the target path at all, a _fstab_ entry with a symbolic link in the mount point path is unusable for unprivileged users and the mount fails.
+ 
++The mount source is not canonicalized for unprivileged users, with the exception of paths in _/dev/_ where the canonicalization is necessary for symbolic links like _/dev/cdrom_ and where the result has to stay in _/dev/_. All other sources are used exactly as written in _fstab_ and symbolic links in them are rejected when the path is opened. This applies namely to the source of a *bind* or *move* operation, which is pinned by a file descriptor in the same way as the target.
++
+ WARNING: When the new mount API is not available (Linux before 5.2, or *mount*(8) compiled without the support for it), the legacy *mount*(2) syscall is used. In this case the pinned target is referenced by a _/proc/self/fd/_ path, which requires a mounted _/proc_ filesystem. Without _/proc_ the target path is resolved by the kernel again and the inherent time-of-check-to-time-of-use (TOCTOU) window between the verification and the mount operation remains; if an ancestor directory of the mount target is writable by the unprivileged user, a path component could be swapped to redirect the mount to an unintended location. Administrators should ensure that mount target paths for *user* mounts do not traverse directories writable by unprivileged users.
+ 
+ === Bind mount operation
+-- 
+2.55.0
+

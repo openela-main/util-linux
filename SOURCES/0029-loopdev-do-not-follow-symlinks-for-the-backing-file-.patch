@@ -1,0 +1,135 @@
+From e913720fb9060aaaac5ebc36789608316dcad154 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 19:13:52 +0200
+Subject: loopdev: do not follow symlinks for the backing file [CVE-2026-27456]
+
+A loop mount from fstab is set up with root privileges, but the backing
+file is a path the unprivileged user may control:
+
+	/home/user/disk.img /mnt/img ext4 noauto,user,loop 0 0
+
+loopcxt_set_backing_file() canonicalized the path with realpath() and
+loopcxt_setup_device() then opened it with a plain open(2).  Both follow
+symlinks as euid 0, and both can be raced -- the user swaps disk.img (or
+any directory component above it) for a symlink to a root-owned file and
+the kernel attaches that file to the loop device.  The user then has
+read (and with a writable fstab entry, write) access to it through the
+mounted filesystem.
+
+Add LOOPDEV_FL_NOFOLLOW: with the flag the filename is used as it is
+without canonicalization, and it is opened with ul_open_no_symlinks(),
+i.e. openat2(RESOLVE_NO_SYMLINKS), which rejects a symlink in *any*
+component -- unlike O_NOFOLLOW, which only checks the last one.
+hook_loopdev.c sets the flag for restricted (non-root) contexts; root
+behaviour is unchanged, /dev/cdrom-style symlinked backing files keep
+working for root.
+
+	$ ln -s /tmp/img /tmp/link
+	# fstab: /tmp/link /mnt/img ext4 noauto,user,loop 0 0
+	$ mount /mnt/img
+	mount: /mnt/img: failed to setup loop device for /tmp/link.
+
+Backport notes:
+
+ * Both patches are taken from the upstream stable/v2.42 branch.
+   0ba0f14caa was authored on the stable branch during the embargo and
+   has no master counterpart of its own; 8eda6a4326 records the master
+   commit in its own message.
+
+ * ul_canonicalize_path() is still called canonicalize_path() here.
+
+ * The EROFS/EACCES read-only retry in loopcxt_setup_device() had to be
+   restructured (the original nested the retry inside the first open()
+   failure branch) to avoid a third copy of the open call.  The logic is
+   the same as upstream.
+
+CVE-2026-27456
+
+Addresses: RHEL-261030
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 0ba0f14caa812349424df0da00ac2d97fee9d972)
+(cherry picked from commit 8eda6a43262a0e98cd1caa07a8da78523e178575)
+---
+ include/loopdev.h           |  3 ++-
+ lib/loopdev.c               | 28 +++++++++++++++++++---------
+ libmount/src/hook_loopdev.c |  3 ++-
+ 3 files changed, 23 insertions(+), 11 deletions(-)
+
+diff --git a/include/loopdev.h b/include/loopdev.h
+index d10bf7f37..0f85dd254 100644
+--- a/include/loopdev.h
++++ b/include/loopdev.h
+@@ -139,7 +139,8 @@ enum {
+ 	LOOPDEV_FL_NOIOCTL	= (1 << 6),
+ 	LOOPDEV_FL_DEVSUBDIR	= (1 << 7),
+ 	LOOPDEV_FL_CONTROL	= (1 << 8),	/* system with /dev/loop-control */
+-	LOOPDEV_FL_SIZELIMIT	= (1 << 9)
++	LOOPDEV_FL_SIZELIMIT	= (1 << 9),
++	LOOPDEV_FL_NOFOLLOW	= (1 << 10)	/* O_NOFOLLOW, don't follow symlinks */
+ };
+ 
+ /*
+diff --git a/lib/loopdev.c b/lib/loopdev.c
+index c72fb2c40..8eb8253bd 100644
+--- a/lib/loopdev.c
++++ b/lib/loopdev.c
+@@ -1267,7 +1267,10 @@ int loopcxt_set_backing_file(struct loopdev_cxt *lc, const char *filename)
+ 	if (!lc)
+ 		return -EINVAL;
+ 
+-	lc->filename = canonicalize_path(filename);
++	if (lc->flags & LOOPDEV_FL_NOFOLLOW)
++		lc->filename = strdup(filename);
++	else
++		lc->filename = canonicalize_path(filename);
+ 	if (!lc->filename)
+ 		return -errno;
+ 
+@@ -1408,15 +1411,22 @@ int loopcxt_setup_device(struct loopdev_cxt *lc)
+ 
+ 	if (lc->config.info.lo_flags & LO_FLAGS_DIRECT_IO)
+ 		flags |= O_DIRECT;
++	if (lc->flags & LOOPDEV_FL_NOFOLLOW)
++		file_fd = ul_open_no_symlinks(lc->filename, mode | flags, 0);
++	else
++		file_fd = open(lc->filename, mode | flags);
+ 
+-	if ((file_fd = open(lc->filename, mode | flags)) < 0) {
+-		if (mode != O_RDONLY && (errno == EROFS || errno == EACCES))
+-			file_fd = open(lc->filename, (mode = O_RDONLY) | flags);
+-
+-		if (file_fd < 0) {
+-			DBG(SETUP, ul_debugobj(lc, "open backing file failed: %m"));
+-			return -errno;
+-		}
++	if (file_fd < 0 && mode != O_RDONLY
++	    && (errno == EROFS || errno == EACCES)) {
++		mode = O_RDONLY;
++		if (lc->flags & LOOPDEV_FL_NOFOLLOW)
++			file_fd = ul_open_no_symlinks(lc->filename, mode | flags, 0);
++		else
++			file_fd = open(lc->filename, mode | flags);
++	}
++	if (file_fd < 0) {
++		DBG(SETUP, ul_debugobj(lc, "open backing file failed: %m"));
++		return -errno;
+ 	}
+ 	DBG(SETUP, ul_debugobj(lc, "backing file open: OK"));
+ 
+diff --git a/libmount/src/hook_loopdev.c b/libmount/src/hook_loopdev.c
+index 747d7b186..31d986108 100644
+--- a/libmount/src/hook_loopdev.c
++++ b/libmount/src/hook_loopdev.c
+@@ -281,7 +281,8 @@ static int setup_loopdev(struct libmnt_context *cxt,
+ 	}
+ 
+ 	DBG(LOOP, ul_debugobj(cxt, "not found; create a new loop device"));
+-	rc = loopcxt_init(&lc, 0);
++	rc = loopcxt_init(&lc,
++			mnt_context_is_restricted(cxt) ? LOOPDEV_FL_NOFOLLOW : 0);
+ 	if (rc)
+ 		goto done_no_deinit;
+ 	if (mnt_opt_has_value(loopopt)) {
+-- 
+2.55.0
+

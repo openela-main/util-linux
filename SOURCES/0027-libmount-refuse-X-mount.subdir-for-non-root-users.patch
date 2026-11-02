@@ -1,0 +1,83 @@
+From 261c83b6c843b8b508b9709ef2047eaa76a56cf2 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 19:01:30 +0200
+Subject: libmount: refuse X-mount.subdir for non-root users
+
+X-mount.subdir= is implemented by mounting the filesystem root on a
+temporary target in an unshared namespace, binding the subdirectory to
+the final mount point and unmounting the root again.  That is a sequence
+of mount(2) and move_mount() calls with the target given by pathname,
+which is exactly what the target pinning avoids everywhere else -- the
+path is resolved by the kernel over and over and any component of it can
+be swapped by the unprivileged user in between.
+
+Upstream solves this by keeping the option working on Linux >= 6.15,
+where the subdirectory can be opened directly on the detached tree and
+the whole hookset collapses into a single open_tree() call.  That code
+does not exist in this branch, so the option is simply refused for
+restricted users here.
+
+Root is not affected and keeps the current implementation.
+
+This is a behaviour change: a "user" fstab entry with X-mount.subdir=
+stops working for unprivileged users and mount(8) reports "filesystem
+was mounted, but any subsequent operation failed: Operation not
+supported".  Nothing is left mounted, the wording comes from the generic
+hook failure path in mnt_context_get_mount_excode().
+
+Backport notes:
+
+ * Taken from the upstream stable/v2.42 branch, which records the master
+   commit in its own message.
+
+ * The Linux >= 6.15 fast path the upstream commit is placed after does
+   not exist here (it came with ce4e181aa, which is not applicable to
+   this branch -- see the CVE-2026-78409 analysis), so the guard is the
+   first thing hook_mount_pre() does and the option is refused on every
+   kernel, not only before 6.15.  The debug message and the manual page
+   wording are adjusted accordingly.
+
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 8bbd56b396ebb8449e5a39391c784df35919827b)
+---
+ libmount/src/hook_subdir.c | 10 ++++++++++
+ sys-utils/mount.8.adoc     |  2 ++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/libmount/src/hook_subdir.c b/libmount/src/hook_subdir.c
+index 2a2b8c2a4..e2a2ddf71 100644
+--- a/libmount/src/hook_subdir.c
++++ b/libmount/src/hook_subdir.c
+@@ -290,6 +290,16 @@ static int hook_mount_pre(
+ 	if (!hsd)
+ 		return 0;
+ 
++	/* The unshare + string-based move_mount() dance below is not safe for
++	 * restricted users; the safe variant (open the subdirectory directly
++	 * on the detached tree) needs Linux >= 6.15 and is not available in
++	 * this branch. */
++	if (mnt_context_target_fd_required(cxt)) {
++		DBG(HOOK, ul_debugobj(hs,
++			"subdir mount refused for non-root user"));
++		return -ENOTSUP;
++	}
++
+ 	/* create unhared temporary target */
+ 	hsd->org_target = strdup(mnt_fs_get_target(cxt->fs));
+ 	if (!hsd->org_target)
+diff --git a/sys-utils/mount.8.adoc b/sys-utils/mount.8.adoc
+index 8ef21d5c6..059731cef 100644
+--- a/sys-utils/mount.8.adoc
++++ b/sys-utils/mount.8.adoc
+@@ -727,6 +727,8 @@ Allow mounting sub-directory from a filesystem instead of the root directory. Fo
+ +
+ Note that this feature will not work in session with an unshared private mount namespace (after *unshare --mount*) on old kernels or with *mount*(8) without support for file-descriptors-based mount kernel API. In this case, you need *unshare --mount --propagation shared*.
+ +
++This option is not supported for unprivileged (non-root) users. The temporary root-directory mount and the following bind are done by several *mount*(2) syscalls with the target given by pathname, which cannot be protected against a path component swapped in the meantime.
+++
+ This feature is EXPERIMENTAL.
+ 
+ *X-mount.owner*=_username_|_UID_, *X-mount.group*=_group_|_GID_::
+-- 
+2.55.0
+

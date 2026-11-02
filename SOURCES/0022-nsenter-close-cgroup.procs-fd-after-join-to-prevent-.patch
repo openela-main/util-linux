@@ -1,0 +1,162 @@
+From c0e10f1eb33a5aec118aa57ced1448c0381415d0 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 15:11:57 +0200
+Subject: nsenter: close cgroup.procs fd after join to prevent authority leak
+ [CVE-2026-78408]
+
+The --join-cgroup option opens the target's cgroup.procs while running
+as root and writes nsenter's own PID to migrate itself. The descriptor
+was left open across subsequent namespace transitions, credential drops
+(setgroups/setgid/setuid) and execve().
+
+The kernel performs cgroup migration permission checks using the
+credentials captured at open time (file->f_cred). An open cgroup.procs
+descriptor therefore carries the opener's migration authority regardless
+of later privilege changes. A program executed inside the target
+namespace inherits root's cgroup migration capability even when running
+as an unprivileged user with no capabilities.
+
+Fix this by:
+
+ - closing the temporary /proc/PID/cgroup fd after reading the path
+ - adding O_CLOEXEC to the cgroup.procs open as defense in depth
+ - closing cgroup_procs_fd immediately after the self-migration write
+ - initializing the temporary cgroup fd to -1 instead of 0 to avoid
+   accidentally closing stdin via open_target_fd()
+
+The descriptor has no legitimate use after the single migration write.
+
+Additionally, add O_CLOEXEC (and EFD_CLOEXEC for eventfd) to all the
+remaining file descriptor creation sites in nsenter and unshare. Those
+descriptors are already explicitly closed before exec, but O_CLOEXEC
+provides a safety net against future code changes that might
+accidentally introduce a leak path.
+
+Backport note: both upstream commits are squashed into one. The
+open_by_handle_at() call in nsenter (namespace ID support) and the
+load_interp() opens in unshare (binfmt_misc support) do not exist in
+this branch, so those O_CLOEXEC hunks are dropped.
+
+Introduced-by: b40650b71a74 ("nsenter: add option -c to join the cgroup of target process")
+(cherry picked from commit 003c622428f09fc6544ed06b533d278dc14f88e0)
+(cherry picked from commit afe067c979b9ba2cbe856f7c6411210120ea62aa)
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ sys-utils/nsenter.c | 17 +++++++++++------
+ sys-utils/unshare.c |  8 ++++----
+ 2 files changed, 15 insertions(+), 10 deletions(-)
+
+diff --git a/sys-utils/nsenter.c b/sys-utils/nsenter.c
+index 8f7bac922..2b919a25e 100644
+--- a/sys-utils/nsenter.c
++++ b/sys-utils/nsenter.c
+@@ -169,7 +169,7 @@ static void open_target_fd(int *fd, const char *type, const char *path)
+ 	if (*fd >= 0)
+ 		close(*fd);
+ 
+-	*fd = open(path, O_RDONLY);
++	*fd = open(path, O_RDONLY | O_CLOEXEC);
+ 	if (*fd < 0)
+ 		err(EXIT_FAILURE, _("cannot open %s"), path);
+ }
+@@ -202,7 +202,7 @@ static int get_ns_ino(const char *path, ino_t *ino)
+ static void open_cgroup_procs(void)
+ {
+ 	char *buf = NULL, *path = NULL, *p;
+-	int cgroup_fd = 0;
++	int cgroup_fd = -1;
+ 	char fdpath[PATH_MAX];
+ 
+ 	open_target_fd(&cgroup_fd, "cgroup", optarg);
+@@ -210,6 +210,8 @@ static void open_cgroup_procs(void)
+ 	if (read_all_alloc(cgroup_fd, &buf) < 1)
+ 		err(EXIT_FAILURE, _("failed to get cgroup path"));
+ 
++	close(cgroup_fd);
++
+ 	p = strtok(buf, "\n");
+ 	if (p)
+ 		path = strrchr(p, ':');
+@@ -219,7 +221,7 @@ static void open_cgroup_procs(void)
+ 
+ 	snprintf(fdpath, sizeof(fdpath), _PATH_SYS_CGROUP "/%s/cgroup.procs", path);
+ 
+-	if ((cgroup_procs_fd = open(fdpath, O_WRONLY | O_APPEND)) < 0)
++	if ((cgroup_procs_fd = open(fdpath, O_WRONLY | O_APPEND | O_CLOEXEC)) < 0)
+ 		err(EXIT_FAILURE, _("failed to open cgroup.procs"));
+ 
+ 	free(buf);
+@@ -603,7 +605,7 @@ int main(int argc, char *argv[])
+ 
+ 	/* Remember the current working directory if I'm not changing it */
+ 	if (root_fd >= 0 && wd_fd < 0 && wdns == NULL) {
+-		wd_fd = open(".", O_RDONLY);
++		wd_fd = open(".", O_RDONLY | O_CLOEXEC);
+ 		if (wd_fd < 0)
+ 			err(EXIT_FAILURE,
+ 			    _("cannot open current working directory"));
+@@ -626,7 +628,7 @@ int main(int argc, char *argv[])
+ 
+ 	/* working directory specified as in-namespace path */
+ 	if (wdns) {
+-		wd_fd = open(wdns, O_RDONLY);
++		wd_fd = open(wdns, O_RDONLY | O_CLOEXEC);
+ 		if (wd_fd < 0)
+ 			err(EXIT_FAILURE,
+ 			    _("cannot open current working directory"));
+@@ -654,8 +656,11 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ 	// Join into the target cgroup
+-	if (cgroup_procs_fd >= 0)
++	if (cgroup_procs_fd >= 0) {
+ 		join_into_cgroup();
++		close(cgroup_procs_fd);
++		cgroup_procs_fd = -1;
++	}
+ 
+ 	if (uid_gid_fd >= 0) {
+ 		struct stat st;
+diff --git a/sys-utils/unshare.c b/sys-utils/unshare.c
+index ccb083442..e422482ec 100644
+--- a/sys-utils/unshare.c
++++ b/sys-utils/unshare.c
+@@ -108,7 +108,7 @@ static void setgroups_control(int action)
+ 		return;
+ 	cmd = setgroups_strings[action];
+ 
+-	fd = open(file, O_WRONLY);
++	fd = open(file, O_WRONLY | O_CLOEXEC);
+ 	if (fd < 0) {
+ 		if (errno == ENOENT)
+ 			return;
+@@ -125,7 +125,7 @@ static void map_id(const char *file, uint32_t from, uint32_t to)
+ 	char *buf;
+ 	int fd;
+ 
+-	fd = open(file, O_WRONLY);
++	fd = open(file, O_WRONLY | O_CLOEXEC);
+ 	if (fd < 0)
+ 		 err(EXIT_FAILURE, _("cannot open %s"), file);
+ 
+@@ -219,7 +219,7 @@ static void settime(int64_t offset, clockid_t clk_id)
+ 
+ 	len = snprintf(buf, sizeof(buf), "%d %" PRId64 " 0", clk_id, offset);
+ 
+-	fd = open("/proc/self/timens_offsets", O_WRONLY);
++	fd = open("/proc/self/timens_offsets", O_WRONLY | O_CLOEXEC);
+ 	if (fd < 0)
+ 		err(EXIT_FAILURE, _("failed to open /proc/self/timens_offsets"));
+ 
+@@ -289,7 +289,7 @@ static pid_t fork_and_wait(int *fd)
+ 	pid_t pid;
+ 	uint64_t ch;
+ 
+-	*fd = eventfd(0, 0);
++	*fd = eventfd(0, EFD_CLOEXEC);
+ 	if (*fd < 0)
+ 		err(EXIT_FAILURE, _("eventfd failed"));
+ 
+-- 
+2.55.0
+

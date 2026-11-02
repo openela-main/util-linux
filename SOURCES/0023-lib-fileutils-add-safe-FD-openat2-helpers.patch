@@ -1,0 +1,569 @@
+From fa1e276bf825bb6ef5044ad65f63457f6ff42c13 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Fri, 11 Sep 2026 17:39:26 +0200
+Subject: lib/fileutils: add safe FD/openat2 helpers
+
+Backport of the lib/fileutils infrastructure the libmount TOCTOU and
+SUID hardening depends on.  No functional change on its own; nothing in
+this branch calls the new helpers yet.
+
+ * ul_openat_resolve() -- openat2(2) wrapper, returns ENOSYS when the
+   syscall is not available.  configure.ac learns to probe for
+   <linux/openat2.h>; RESOLVE_NO_SYMLINKS and RESOLVE_BENEATH get a
+   fallback definition in include/fileutils.h for build environments
+   with older kernel headers.
+
+ * ul_open_no_symlinks() -- opens a path rejecting symlinks at any
+   component, not just the last one.  Uses openat2(RESOLVE_NO_SYMLINKS)
+   (Linux >= 5.6) and falls back to open(O_PATH) plus a readlink() of
+   /proc/self/fd/<fd> when openat2() is unavailable, so that e.g. a
+   container seccomp profile answering openat2() with ENOSYS does not
+   silently disable the protection.
+
+ * ul_fd_mkpath() -- composes "/proc/self/fd/<fd>" on one place, with
+   one buffer size (UL_FDPATH_BUFSIZ).  The pathname was open-coded on
+   several places, each with its own size calculation.
+
+ * ul_fd_get_path() -- asks the kernel for the name of an already open
+   file.  Refuses names which are not usable for open(): the
+   "<path> (deleted)" names of unlinked files, the pseudo-names of
+   pipes and sockets, and truncated readlink() results.  This is used
+   to canonicalize the pinned mount target, so a silently shortened
+   name would end up in the mount table and in utab.
+
+   ul_reopen() is converted to it and thereby gains the same checks.
+
+Backport notes:
+
+ * The patches are taken from the upstream stable/v2.42 branch; each of
+   the commits referenced below records the corresponding master commit
+   in its own message.  Five commits are squashed into one; fde56542c
+   and 67fd3bf43 are fixups of the two commits before them.
+ * The monitor_fanotify.c hunk of 14cfec982 is dropped -- the libmount
+   monitor is not split into monitor_{fanotify,mountinfo,utab}.c in
+   this branch.
+ * The refactoring of ul_restricted_path_oper() is not backported; this
+   branch still has the fork+drop_permissions code inline in
+   lib/canonicalize.c.  Only the ul_fd_get_path() half of that hunk is
+   taken.
+ * ul_absolute_path(), ul_is_relative_path() and ul_endswith() are
+   still called absolute_path(), is_relative_path() and endswith() here.
+ * lib/fileutils.c now uses lib/canonicalize.c and lib/strutils.c, so
+   test_fileutils has to link libcommon.la.  Upstream did this in the
+   unrelated cleanup 1aff73db2; only the single line is taken.
+
+(cherry picked from commit f0118f97075d583df457734c111fc04c91e4aa42)
+(cherry picked from commit 1426aa06ff2f6a21cba9102c35e3577641b356ff)
+(cherry picked from commit fde56542caf5cbca449fe583cecca37d6bab71c6)
+(cherry picked from commit 67fd3bf434299c701c9361dca509d752e220ea7f)
+(cherry picked from commit 14cfec982d01c826293ead4c70d5e6a411abf82c)
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ configure.ac        |   1 +
+ include/fileutils.h |  20 +++
+ lib/Makemodule.am   |   1 +
+ lib/fileutils.c     | 334 ++++++++++++++++++++++++++++++++++++++------
+ meson.build         |   1 +
+ term-utils/mesg.c   |   9 +-
+ 6 files changed, 319 insertions(+), 47 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index fb1d8d076..b530553a5 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -343,6 +343,7 @@ AC_CHECK_HEADERS([ \
+ 	linux/kcmp.h \
+ 	linux/net_namespace.h \
+ 	linux/nsfs.h \
++	linux/openat2.h \
+ 	linux/pr.h \
+ 	linux/raw.h \
+ 	linux/securebits.h \
+diff --git a/include/fileutils.h b/include/fileutils.h
+index 6fc93d0db..b5698a04b 100644
+--- a/include/fileutils.h
++++ b/include/fileutils.h
+@@ -11,7 +11,12 @@
+ #include <dirent.h>
+ #include <sys/stat.h>
+ 
++#ifdef HAVE_LINUX_OPENAT2_H
++# include <linux/openat2.h>
++#endif
++
+ #include "c.h"
++#include "pathnames.h"
+ 
+ extern int mkstemp_cloexec(char *template);
+ 
+@@ -61,6 +66,17 @@ static inline int is_same_inode(const int fd, const struct stat *st)
+ 	return 1;
+ }
+ 
++extern int ul_open_no_symlinks(const char *path, int flags, mode_t mode);
++extern int ul_openat_resolve(int dirfd, const char *path, int flags,
++			     mode_t mode, unsigned long long resolve);
++
++#ifndef RESOLVE_NO_SYMLINKS
++# define RESOLVE_NO_SYMLINKS	0x04
++#endif
++#ifndef RESOLVE_BENEATH
++# define RESOLVE_BENEATH	0x08
++#endif
++
+ extern int dup_fd_cloexec(int oldfd, int lowfd);
+ extern unsigned int get_fd_tabsize(void);
+ 
+@@ -112,8 +128,12 @@ extern void ul_close_all_fds(unsigned int first, unsigned int last);
+ #define UL_COPY_WRITE_ERROR (-2)
+ int ul_copy_file(int from, int to);
+ 
++/* Size of the buffer for ul_fd_mkpath() */
++#define UL_FDPATH_BUFSIZ	(sizeof(_PATH_PROC_FDDIR) + sizeof(stringify_value(INT_MAX)))
+ 
+ extern int ul_reopen(int fd, int flags);
++extern char *ul_fd_mkpath(char *buf, size_t bufsz, int fd);
++extern char *ul_fd_get_path(int fd);
+ extern char *ul_basename(char *path);
+ 
+ #endif /* UTIL_LINUX_FILEUTILS */
+diff --git a/lib/Makemodule.am b/lib/Makemodule.am
+index d95721ee2..d8e8c0aca 100644
+--- a/lib/Makemodule.am
++++ b/lib/Makemodule.am
+@@ -201,6 +201,7 @@ test_fileeq_CFLAGS = $(AM_CFLAGS) -DTEST_PROGRAM_FILEEQ
+ 
+ test_fileutils_SOURCES = lib/fileutils.c
+ test_fileutils_CFLAGS = $(AM_CFLAGS) -DTEST_PROGRAM_FILEUTILS
++test_fileutils_LDADD = $(LDADD) libcommon.la
+ 
+ test_canonicalize_SOURCES = lib/canonicalize.c
+ test_canonicalize_CFLAGS = $(AM_CFLAGS) -DTEST_PROGRAM_CANONICALIZE
+diff --git a/lib/fileutils.c b/lib/fileutils.c
+index 95ee51635..7ac1ffbf3 100644
+--- a/lib/fileutils.c
++++ b/lib/fileutils.c
+@@ -11,12 +11,17 @@
+ #include <unistd.h>
+ #include <sys/time.h>
+ #include <sys/resource.h>
++#include <sys/syscall.h>
+ #include <string.h>
++#include <fcntl.h>
++#include <errno.h>
+ 
+ #include "c.h"
+ #include "all-io.h"
++#include "canonicalize.h"
+ #include "fileutils.h"
+ #include "pathnames.h"
++#include "strutils.h"
+ 
+ int mkstemp_cloexec(char *template)
+ {
+@@ -170,42 +175,6 @@ void ul_close_all_fds(unsigned int first, unsigned int last)
+ 	}
+ }
+ 
+-#ifdef TEST_PROGRAM_FILEUTILS
+-int main(int argc, char *argv[])
+-{
+-	if (argc < 2)
+-		errx(EXIT_FAILURE, "Usage %s --{mkstemp,close-fds,copy-file}", argv[0]);
+-
+-	if (strcmp(argv[1], "--mkstemp") == 0) {
+-		FILE *f;
+-		char *tmpname = NULL;
+-
+-		f = xfmkstemp(&tmpname, NULL, "test");
+-		unlink(tmpname);
+-		free(tmpname);
+-		fclose(f);
+-
+-	} else if (strcmp(argv[1], "--close-fds") == 0) {
+-		ignore_result( dup(STDIN_FILENO) );
+-		ignore_result( dup(STDIN_FILENO) );
+-		ignore_result( dup(STDIN_FILENO) );
+-
+-# ifdef HAVE_CLOSE_RANGE
+-		if (close_range(STDERR_FILENO + 1, ~0U, 0) < 0)
+-# endif
+-			ul_close_all_fds(STDERR_FILENO + 1, ~0U);
+-
+-	} else if (strcmp(argv[1], "--copy-file") == 0) {
+-		int ret = ul_copy_file(STDIN_FILENO, STDOUT_FILENO);
+-		if (ret == UL_COPY_READ_ERROR)
+-			err(EXIT_FAILURE, "read");
+-		else if (ret == UL_COPY_WRITE_ERROR)
+-			err(EXIT_FAILURE, "write");
+-	}
+-	return EXIT_SUCCESS;
+-}
+-#endif
+-
+ 
+ int ul_mkdir_p(const char *path, mode_t mode)
+ {
+@@ -293,23 +262,84 @@ int ul_copy_file(int from, int to)
+ #endif
+ }
+ 
+-int ul_reopen(int fd, int flags)
++/* Composes the /proc/self/fd/<fd> pathname for @fd. The @bufsz has to be at
++ * least UL_FDPATH_BUFSIZ bytes.
++ *
++ * This is the only place where the /proc/self/fd/ pathnames are generated.
++ *
++ * Returns @buf, or NULL on error.
++ */
++char *ul_fd_mkpath(char *buf, size_t bufsz, int fd)
++{
++	int len;
++
++	if (fd < 0) {
++		errno = EBADF;
++		return NULL;
++	}
++
++	len = snprintf(buf, bufsz, _PATH_PROC_FDDIR "/%d", fd);
++	if (len < 0 || (size_t) len >= bufsz) {
++		errno = ENAMETOOLONG;
++		return NULL;
++	}
++
++	return buf;
++}
++
++/* Returns the pathname the @fd refers to as used by the kernel, or NULL on
++ * error. The result has to be deallocated by free().
++ */
++char *ul_fd_get_path(int fd)
+ {
+ 	ssize_t ssz;
+ 	char buf[PATH_MAX];
+-	char fdpath[ sizeof(_PATH_PROC_FDDIR) + sizeof(stringify_value(INT_MAX)) ];
++	char fdpath[UL_FDPATH_BUFSIZ];
+ 
+-	snprintf(fdpath, sizeof(fdpath), _PATH_PROC_FDDIR "/%d", fd);
++	if (!ul_fd_mkpath(fdpath, sizeof(fdpath), fd))
++		return NULL;
+ 
+-	ssz = readlink(fdpath, buf, sizeof(buf) - 1);
++	ssz = readlink(fdpath, buf, sizeof(buf));
+ 	if (ssz < 0)
+-		return -errno;
++		return NULL;
+ 
+-	assert(ssz > 0);
++	/* readlink() does not terminate the result and it does not report
++	 * truncation; a name we cannot read completely is unusable */
++	if ((size_t) ssz >= sizeof(buf)) {
++		errno = ENAMETOOLONG;
++		return NULL;
++	}
+ 
+ 	buf[ssz] = '\0';
+ 
+-	return open(buf, flags);
++	/* readlink() also succeeds for things without a pathname (pipes,
++	 * sockets, ...) and it returns "<path> (deleted)" for unlinked files;
++	 * refuse all of it rather than return a bogus path.
++	 *
++	 * Note that this also refuses a real file named "foo (deleted)". To
++	 * tell it apart we would have to stat() the name, and such a path
++	 * lookup may trigger an automount or block on an unreachable NFS
++	 * server. */
++	if (*buf != '/' || endswith(buf, PATH_DELETED_SUFFIX)) {
++		errno = ENOENT;
++		return NULL;
++	}
++
++	return strdup(buf);
++}
++
++int ul_reopen(int fd, int flags)
++{
++	char *path = ul_fd_get_path(fd);
++	int ret;
++
++	if (!path)
++		return -errno;
++
++	ret = open(path, flags);
++	free(path);
++
++	return ret;
+ }
+ 
+ 
+@@ -343,3 +373,221 @@ char *ul_basename(char *path)
+ 
+ 	return p;
+ }
++
++#if defined(SYS_openat2)
++int ul_openat_resolve(int dirfd, const char *path, int flags,
++		      mode_t mode, unsigned long long resolve)
++{
++	struct open_how how = {
++		.flags = (__u64) flags,
++		.mode = (__u64) mode,
++		.resolve = resolve,
++	};
++
++	return syscall(SYS_openat2, dirfd, path, &how, sizeof(how));
++}
++#else
++int ul_openat_resolve(
++		int dirfd __attribute__((__unused__)),
++		const char *path __attribute__((__unused__)),
++		int flags __attribute__((__unused__)),
++		mode_t mode __attribute__((__unused__)),
++		unsigned long long resolve __attribute__((__unused__)))
++{
++	errno = ENOSYS;
++	return -1;
++}
++#endif
++
++#ifdef __linux__
++/*
++ * Fallback for kernels without openat2() (Linux < 5.6).
++ *
++ * Open the path and then ask the kernel for the name of the result. If any
++ * component of the path is a symbolic link then the name reported by the
++ * kernel differs from the requested path and we refuse the file descriptor.
++ * A concurrent rename is detected the same way. The name always belongs to
++ * the file descriptor we return, so there is no time-of-check-to-time-of-use
++ * window between the check and the use.
++ *
++ * Note that the symlink is detected after it has been followed rather than
++ * refused during the path resolution. The path is opened with O_PATH to keep
++ * this free of side effects (no device open, no blocking on a FIFO, ...) and
++ * the caller's flags are applied by re-opening the verified file descriptor.
++ *
++ * Returns a file descriptor, or -1 and sets errno to ELOOP when a symlink has
++ * been detected, or to ENOSYS when the check is not possible.
++ */
++static int open_no_symlinks_fallback(const char *path, int flags, mode_t mode)
++{
++	char *abspath = NULL, *kpath = NULL;
++	struct stat st;
++	int fd = -1, errsv;
++
++	/* we cannot verify a file we have to create first */
++	if (!path || (flags & O_CREAT)) {
++		errno = ENOSYS;
++		return -1;
++	}
++
++	if (is_relative_path(path)) {
++		/* the kernel reports an absolute pathname; note that
++		 * absolute_path() only prepends the CWD as returned by
++		 * getcwd(), it resolves nothing */
++		abspath = absolute_path(path);
++		if (!abspath)
++			return -1;
++	}
++
++	if (flags & O_PATH)
++		fd = open(path, flags);
++	else
++		fd = open(path, O_PATH | O_CLOEXEC |
++				(flags & (O_NOFOLLOW | O_DIRECTORY)));
++	if (fd < 0)
++		goto fail;
++
++	/* O_PATH|O_NOFOLLOW returns a FD to the symlink itself */
++	if (fstat(fd, &st) != 0)
++		goto fail;
++	if (S_ISLNK(st.st_mode)) {
++		errno = ELOOP;
++		goto fail;
++	}
++
++	kpath = ul_fd_get_path(fd);
++	if (!kpath) {
++		errno = ENOSYS;		/* no /proc, no verification */
++		goto fail;
++	}
++
++	/* streq_paths() ignores duplicate and trailing slashes, but "." and
++	 * ".." in the requested path are refused as a symlink */
++	if (streq_paths(abspath ? abspath : path, kpath) != 1) {
++		errno = ELOOP;
++		goto fail;
++	}
++
++	if (!(flags & O_PATH)) {
++		char fdpath[UL_FDPATH_BUFSIZ];
++		int nfd = -1;
++
++		/* apply the caller's flags; the /proc link refers to the
++		 * verified file, the path is not resolved for the second time */
++		if (ul_fd_mkpath(fdpath, sizeof(fdpath), fd))
++			nfd = open(fdpath, flags, mode);
++		if (nfd < 0)
++			goto fail;
++		close(fd);
++		fd = nfd;
++	}
++
++	free(abspath);
++	free(kpath);
++	return fd;
++fail:
++	errsv = errno;
++	free(abspath);
++	free(kpath);
++	if (fd >= 0)
++		close(fd);
++	errno = errsv;
++	return -1;
++}
++#else /* !__linux__ */
++/* O_PATH and the /proc/self/fd/ names are Linux specific */
++static int open_no_symlinks_fallback(
++			const char *path __attribute__((__unused__)),
++			int flags __attribute__((__unused__)),
++			mode_t mode __attribute__((__unused__)))
++{
++	errno = ENOSYS;
++	return -1;
++}
++#endif /* __linux__ */
++
++/* Opens @path with the guarantee that no component of the path is a symbolic
++ * link, otherwise it fails with ELOOP.
++ */
++int ul_open_no_symlinks(const char *path, int flags, mode_t mode)
++{
++	int fd = ul_openat_resolve(AT_FDCWD, path, flags, mode,
++				   RESOLVE_NO_SYMLINKS);
++
++	/* openat2() is Linux 5.6+ */
++	if (fd < 0 && errno == ENOSYS)
++		fd = open_no_symlinks_fallback(path, flags, mode);
++
++	return fd;
++}
++
++#ifdef TEST_PROGRAM_FILEUTILS
++int main(int argc, char *argv[])
++{
++	if (argc < 2)
++		errx(EXIT_FAILURE, "Usage %s --{mkstemp,close-fds,copy-file,open-no-symlinks}",
++				argv[0]);
++
++	if (strcmp(argv[1], "--mkstemp") == 0) {
++		FILE *f;
++		char *tmpname = NULL;
++
++		f = xfmkstemp(&tmpname, NULL, "test");
++		unlink(tmpname);
++		free(tmpname);
++		fclose(f);
++
++	} else if (strcmp(argv[1], "--close-fds") == 0) {
++		ignore_result( dup(STDIN_FILENO) );
++		ignore_result( dup(STDIN_FILENO) );
++		ignore_result( dup(STDIN_FILENO) );
++
++# ifdef HAVE_CLOSE_RANGE
++		if (close_range(STDERR_FILENO + 1, ~0U, 0) < 0)
++# endif
++			ul_close_all_fds(STDERR_FILENO + 1, ~0U);
++
++	} else if (strcmp(argv[1], "--copy-file") == 0) {
++		int ret = ul_copy_file(STDIN_FILENO, STDOUT_FILENO);
++		if (ret == UL_COPY_READ_ERROR)
++			err(EXIT_FAILURE, "read");
++		else if (ret == UL_COPY_WRITE_ERROR)
++			err(EXIT_FAILURE, "write");
++
++	} else if (strcmp(argv[1], "--open-no-symlinks") == 0) {
++#ifdef __linux__
++		int flags = O_PATH | O_CLOEXEC;
++#else
++		int flags = O_RDONLY | O_CLOEXEC;
++#endif
++		int fallback = 0;
++		char *name;
++		int fd, i;
++
++		if (argc < 3)
++			errx(EXIT_FAILURE, "no path specified");
++
++		for (i = 3; i < argc; i++) {
++			/* the fallback is used on kernels without openat2()
++			 * only, "--fallback" makes it testable anywhere */
++			if (strcmp(argv[i], "--fallback") == 0)
++				fallback = 1;
++			else if (strcmp(argv[i], "--rdonly") == 0)
++				flags = O_RDONLY | O_CLOEXEC;
++		}
++
++		if (fallback)
++			fd = open_no_symlinks_fallback(argv[2], flags, 0);
++		else
++			fd = ul_open_no_symlinks(argv[2], flags, 0);
++		if (fd < 0)
++			err(EXIT_FAILURE, "%s", argv[2]);
++
++		name = ul_fd_get_path(fd);
++		printf("%s\n", name);
++		free(name);
++		close(fd);
++	}
++	return EXIT_SUCCESS;
++}
++#endif
+diff --git a/meson.build b/meson.build
+index b5b70ab07..9c1ff5850 100644
+--- a/meson.build
++++ b/meson.build
+@@ -198,6 +198,7 @@ headers = '''
+         linux/kcmp.h
+         linux/net_namespace.h
+         linux/nsfs.h
++        linux/openat2.h
+         linux/mount.h
+         linux/pr.h
+         linux/securebits.h
+diff --git a/term-utils/mesg.c b/term-utils/mesg.c
+index 23e2f0d0e..c07cad420 100644
+--- a/term-utils/mesg.c
++++ b/term-utils/mesg.c
+@@ -60,7 +60,7 @@
+ #include "c.h"
+ #include "rpmatch.h"
+ #include "ttyutils.h"
+-#include "pathnames.h"
++#include "fileutils.h"
+ 
+ /* exit codes */
+ 
+@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
+ {
+ 	struct stat sb;
+ 	char *tty;
+-	char ttybuf[sizeof(_PATH_PROC_FDDIR) + sizeof(stringify_value(INT_MAX))];
++	char ttybuf[UL_FDPATH_BUFSIZ];
+ 	int ch, fd, verbose = FALSE, ret;
+ 
+ 	static const struct option longopts[] = {
+@@ -133,8 +133,9 @@ int main(int argc, char *argv[])
+ 
+ 	tty = ttyname(fd);
+ 	if (!tty) {
+-		snprintf(ttybuf, sizeof(ttybuf), "%s/%d", _PATH_PROC_FDDIR, fd);
+-		tty = ttybuf;
++		tty = ul_fd_mkpath(ttybuf, sizeof(ttybuf), fd);
++		if (!tty)
++			err(MESG_EXIT_FAILURE, _("no tty"));
+ 		if (verbose)
+ 			warnx(_("ttyname() failed, attempting to go around using: %s"), tty);
+ 	}
+-- 
+2.55.0
+
