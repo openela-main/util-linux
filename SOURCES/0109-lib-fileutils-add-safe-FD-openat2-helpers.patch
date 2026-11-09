@@ -1,0 +1,512 @@
+From 0ddc2ec21cc06cfdc92298e3224e49d66b2b6ad7 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Mon, 14 Sep 2026 09:22:44 +0200
+Subject: lib/fileutils: add safe FD/openat2 helpers
+
+Backport of the lib/fileutils infrastructure the libmount TOCTOU
+hardening depends on.  No functional change on its own; nothing in this
+branch calls the new helpers yet.
+
+ * ul_openat_resolve() -- openat2(2) wrapper, returns ENOSYS when the
+   syscall is not available.  configure.ac learns to probe for
+   <linux/openat2.h>; RESOLVE_NO_SYMLINKS and RESOLVE_BENEATH get a
+   fallback definition in include/fileutils.h for build environments
+   with older kernel headers.
+
+ * ul_open_no_symlinks() -- opens a path rejecting symlinks at any
+   component, not just the last one.  Uses openat2(RESOLVE_NO_SYMLINKS)
+   (Linux >= 5.6) and falls back to open(O_PATH) plus a readlink() of
+   /proc/self/fd/<fd> when openat2() is unavailable.
+
+ * ul_fd_mkpath() -- composes "/proc/self/fd/<fd>" on one place, with
+   one buffer size (UL_FDPATH_BUFSIZ).
+
+ * ul_fd_get_path() -- asks the kernel for the name of an already open
+   file.  Refuses names which are not usable for open(): the
+   "<path> (deleted)" names of unlinked files, the pseudo-names of
+   pipes and sockets, and truncated readlink() results.  This is used
+   to canonicalize the pinned mount target, so a silently shortened
+   name would end up in the mount table and in utab.
+
+Backport notes:
+
+ * The patches are taken from the upstream stable/v2.42 branch; each of
+   the commits referenced below records the corresponding master commit
+   in its own message.  Five commits are squashed into one; fde56542c
+   and 67fd3bf43 are fixups of the two commits before them.  This is the
+   rhel/9 patch (4a4746991) reduced to what 2.32 needs.
+
+ * openat2() is available on RHEL 8 since 8.7, so
+   openat2(RESOLVE_NO_SYMLINKS) is the normal path on a current system.
+   The older 8.x kernels answer with ENOSYS and
+   open_no_symlinks_fallback() takes over: it opens the path with
+   O_PATH, asks the kernel for the name of the result and refuses the
+   file descriptor when the name differs from the requested path -- a
+   symlink in any component, as well as a rename racing with the open,
+   changes the name.  The name always belongs to the descriptor we
+   return, so the check has no time-of-check-to-time-of-use window of
+   its own.  It needs /proc.
+
+   The fallback is entered on ENOSYS only.  A kernel or an LSM which
+   answers openat2() with EPERM must not silently downgrade the
+   protection.
+
+ * ul_openat_resolve() needs SYS_openat2 from <sys/syscall.h> and
+   struct open_how from <linux/openat2.h>, and a build root may have
+   one without the other.  The openat2() branch is therefore guarded by
+   both SYS_openat2 and HAVE_LINUX_OPENAT2_H; upstream tests
+   SYS_openat2 only, which does not build where the header is missing.
+   A binary built without the header uses the readlink() fallback
+   everywhere -- the protection is kept, only the kernel side path
+   resolution is not used.
+
+ * ul_reopen() and ul_basename() do not exist in this branch, so the
+   conversion of ul_reopen() to ul_fd_get_path() is not applicable.
+
+ * The monitor and mount-API hunks of the upstream commits are dropped,
+   this branch has neither.
+
+ * The cosmetic conversion of term-utils/mesg.c to ul_fd_mkpath() is
+   dropped as well; it is unrelated to the security fix and mesg(1) is
+   not part of this backport.
+
+ * ul_absolute_path(), ul_is_relative_path() and ul_endswith() are
+   still called absolute_path(), is_relative_path() and endswith() here.
+
+ * _PATH_PROC_FDDIR is new in include/pathnames.h; 2.32 has no
+   definition for /proc/self/fd yet.
+
+ * lib/fileutils.c now uses lib/canonicalize.c and lib/strutils.c, so
+   test_fileutils has to link libcommon.la.  Upstream did this in the
+   unrelated cleanup 1aff73db2; only the single line is taken.
+
+ * ul_close_all_fds() and ul_copy_file() do not exist in 2.32 and the
+   upstream context of the new code -- the xreaddir() based FD closing
+   and the sendfile() based copy -- is not backported.  mkdir_p() keeps
+   its name, upstream renamed it to ul_mkdir_p() later.
+
+ * The TEST_PROGRAM_FILEUTILS block is moved to the end of the file (it
+   was in the middle), gains an argument parser and the
+   --open-no-symlinks test case.  "--fallback" makes the non-openat2()
+   path testable on a machine with a new kernel:
+
+	$ ln -s /tmp/r8t/real /tmp/r8t/link
+	$ ./test_fileutils --open-no-symlinks /tmp/r8t/link
+	test_fileutils: /tmp/r8t/link: Too many levels of symbolic links
+	$ ./test_fileutils --open-no-symlinks /tmp/r8t/link --fallback
+	test_fileutils: /tmp/r8t/link: Too many levels of symbolic links
+
+Addresses: RHEL-244823
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit f0118f97075d583df457734c111fc04c91e4aa42)
+(cherry picked from commit 1426aa06ff2f6a21cba9102c35e3577641b356ff)
+(cherry picked from commit fde56542caf5cbca449fe583cecca37d6bab71c6)
+(cherry picked from commit 67fd3bf434299c701c9361dca509d752e220ea7f)
+(cherry picked from commit 14cfec982d01c826293ead4c70d5e6a411abf82c)
+(cherry picked from commit 4a4746991dbbc8f92f4857729fb8a5895dce9830)
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ configure.ac        |   1 +
+ include/fileutils.h |  22 ++++
+ include/pathnames.h |   2 +
+ lib/Makemodule.am   |   1 +
+ lib/fileutils.c     | 286 +++++++++++++++++++++++++++++++++++++++++---
+ 5 files changed, 298 insertions(+), 14 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 245004890..e622b89fd 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -231,6 +231,7 @@ AC_CHECK_HEADERS([ \
+ 	linux/falloc.h \
+ 	linux/watchdog.h \
+ 	linux/fd.h \
++	linux/openat2.h \
+ 	linux/raw.h \
+ 	linux/tiocl.h \
+ 	linux/version.h \
+diff --git a/include/fileutils.h b/include/fileutils.h
+index 8a7e66261..b1f52d37b 100644
+--- a/include/fileutils.h
++++ b/include/fileutils.h
+@@ -6,7 +6,12 @@
+ #include <unistd.h>
+ #include <sys/stat.h>
+ 
++#ifdef HAVE_LINUX_OPENAT2_H
++# include <linux/openat2.h>
++#endif
++
+ #include "c.h"
++#include "pathnames.h"
+ 
+ extern int mkstemp_cloexec(char *template);
+ 
+@@ -51,10 +56,27 @@ static inline int is_same_inode(const int fd, const struct stat *st)
+ 	return 1;
+ }
+ 
++extern int ul_open_no_symlinks(const char *path, int flags, mode_t mode);
++extern int ul_openat_resolve(int dirfd, const char *path, int flags,
++			     mode_t mode, unsigned long long resolve);
++
++#ifndef RESOLVE_NO_SYMLINKS
++# define RESOLVE_NO_SYMLINKS	0x04
++#endif
++#ifndef RESOLVE_BENEATH
++# define RESOLVE_BENEATH	0x08
++#endif
++
+ extern int dup_fd_cloexec(int oldfd, int lowfd);
+ extern int get_fd_tabsize(void);
+ 
+ extern int mkdir_p(const char *path, mode_t mode);
+ extern char *stripoff_last_component(char *path);
+ 
++/* Size of the buffer for ul_fd_mkpath() */
++#define UL_FDPATH_BUFSIZ	(sizeof(_PATH_PROC_FDDIR) + sizeof(stringify_value(INT_MAX)))
++
++extern char *ul_fd_mkpath(char *buf, size_t bufsz, int fd);
++extern char *ul_fd_get_path(int fd);
++
+ #endif /* UTIL_LINUX_FILEUTILS */
+diff --git a/include/pathnames.h b/include/pathnames.h
+index 19b117cb9..a47591dbf 100644
+--- a/include/pathnames.h
++++ b/include/pathnames.h
+@@ -97,6 +97,8 @@
+ #define _PATH_PROC_GIDMAP	"/proc/self/gid_map"
+ #define _PATH_PROC_SETGROUPS	"/proc/self/setgroups"
+ 
++#define _PATH_PROC_FDDIR	"/proc/self/fd"
++
+ #define _PATH_PROC_ATTR_CURRENT	"/proc/self/attr/current"
+ #define _PATH_PROC_ATTR_EXEC	"/proc/self/attr/exec"
+ #define _PATH_PROC_CAPLASTCAP	"/proc/sys/kernel/cap_last_cap"
+diff --git a/lib/Makemodule.am b/lib/Makemodule.am
+index 2166d0384..7597cd54f 100644
+--- a/lib/Makemodule.am
++++ b/lib/Makemodule.am
+@@ -147,6 +147,7 @@ endif
+ 
+ test_fileutils_SOURCES = lib/fileutils.c
+ test_fileutils_CFLAGS = $(AM_CFLAGS) -DTEST_PROGRAM_FILEUTILS
++test_fileutils_LDADD = $(LDADD) libcommon.la
+ 
+ test_canonicalize_SOURCES = lib/canonicalize.c
+ test_canonicalize_CFLAGS = $(AM_CFLAGS) -DTEST_PROGRAM_CANONICALIZE
+diff --git a/lib/fileutils.c b/lib/fileutils.c
+index 822ca9676..d3fb3b589 100644
+--- a/lib/fileutils.c
++++ b/lib/fileutils.c
+@@ -8,10 +8,16 @@
+ #include <unistd.h>
+ #include <sys/time.h>
+ #include <sys/resource.h>
++#include <sys/syscall.h>
++#include <string.h>
++#include <fcntl.h>
++#include <errno.h>
+ 
+ #include "c.h"
++#include "canonicalize.h"
+ #include "fileutils.h"
+ #include "pathnames.h"
++#include "strutils.h"
+ 
+ int mkstemp_cloexec(char *template)
+ {
+@@ -124,20 +130,6 @@ int get_fd_tabsize(void)
+ 	return m;
+ }
+ 
+-#ifdef TEST_PROGRAM_FILEUTILS
+-int main(void)
+-{
+-	FILE *f;
+-	char *tmpname;
+-	f = xfmkstemp(&tmpname, NULL, "test");
+-	unlink(tmpname);
+-	free(tmpname);
+-	fclose(f);
+-	return EXIT_FAILURE;
+-}
+-#endif
+-
+-
+ int mkdir_p(const char *path, mode_t mode)
+ {
+ 	char *p, *dir;
+@@ -184,3 +176,269 @@ char *stripoff_last_component(char *path)
+ 	*p = '\0';
+ 	return p + 1;
+ }
++
++/* Composes the /proc/self/fd/<fd> pathname for @fd. The @bufsz has to be at
++ * least UL_FDPATH_BUFSIZ bytes.
++ *
++ * This is the only place where the /proc/self/fd/ pathnames are generated.
++ *
++ * Returns @buf, or NULL on error.
++ */
++char *ul_fd_mkpath(char *buf, size_t bufsz, int fd)
++{
++	int len;
++
++	if (fd < 0) {
++		errno = EBADF;
++		return NULL;
++	}
++
++	len = snprintf(buf, bufsz, _PATH_PROC_FDDIR "/%d", fd);
++	if (len < 0 || (size_t) len >= bufsz) {
++		errno = ENAMETOOLONG;
++		return NULL;
++	}
++
++	return buf;
++}
++
++/* Returns the pathname the @fd refers to as used by the kernel, or NULL on
++ * error. The result has to be deallocated by free().
++ */
++char *ul_fd_get_path(int fd)
++{
++	ssize_t ssz;
++	char buf[PATH_MAX];
++	char fdpath[UL_FDPATH_BUFSIZ];
++
++	if (!ul_fd_mkpath(fdpath, sizeof(fdpath), fd))
++		return NULL;
++
++	ssz = readlink(fdpath, buf, sizeof(buf));
++	if (ssz < 0)
++		return NULL;
++
++	/* readlink() does not terminate the result and it does not report
++	 * truncation; a name we cannot read completely is unusable */
++	if ((size_t) ssz >= sizeof(buf)) {
++		errno = ENAMETOOLONG;
++		return NULL;
++	}
++
++	buf[ssz] = '\0';
++
++	/* readlink() also succeeds for things without a pathname (pipes,
++	 * sockets, ...) and it returns "<path> (deleted)" for unlinked files;
++	 * refuse all of it rather than return a bogus path.
++	 *
++	 * Note that this also refuses a real file named "foo (deleted)". To
++	 * tell it apart we would have to stat() the name, and such a path
++	 * lookup may trigger an automount or block on an unreachable NFS
++	 * server. */
++	if (*buf != '/' || endswith(buf, PATH_DELETED_SUFFIX)) {
++		errno = ENOENT;
++		return NULL;
++	}
++
++	return strdup(buf);
++}
++
++#if defined(SYS_openat2) && defined(HAVE_LINUX_OPENAT2_H)
++int ul_openat_resolve(int dirfd, const char *path, int flags,
++		      mode_t mode, unsigned long long resolve)
++{
++	struct open_how how = {
++		.flags = (__u64) flags,
++		.mode = (__u64) mode,
++		.resolve = resolve,
++	};
++
++	return syscall(SYS_openat2, dirfd, path, &how, sizeof(how));
++}
++#else
++int ul_openat_resolve(
++		int dirfd __attribute__((__unused__)),
++		const char *path __attribute__((__unused__)),
++		int flags __attribute__((__unused__)),
++		mode_t mode __attribute__((__unused__)),
++		unsigned long long resolve __attribute__((__unused__)))
++{
++	errno = ENOSYS;
++	return -1;
++}
++#endif
++
++#ifdef __linux__
++/*
++ * Fallback for kernels without openat2() (Linux < 5.6).
++ *
++ * Open the path and then ask the kernel for the name of the result. If any
++ * component of the path is a symbolic link then the name reported by the
++ * kernel differs from the requested path and we refuse the file descriptor.
++ * A concurrent rename is detected the same way. The name always belongs to
++ * the file descriptor we return, so there is no time-of-check-to-time-of-use
++ * window between the check and the use.
++ *
++ * Note that the symlink is detected after it has been followed rather than
++ * refused during the path resolution. The path is opened with O_PATH to keep
++ * this free of side effects (no device open, no blocking on a FIFO, ...) and
++ * the caller's flags are applied by re-opening the verified file descriptor.
++ *
++ * Returns a file descriptor, or -1 and sets errno to ELOOP when a symlink has
++ * been detected, or to ENOSYS when the check is not possible.
++ */
++static int open_no_symlinks_fallback(const char *path, int flags, mode_t mode)
++{
++	char *abspath = NULL, *kpath = NULL;
++	struct stat st;
++	int fd = -1, errsv;
++
++	/* we cannot verify a file we have to create first */
++	if (!path || (flags & O_CREAT)) {
++		errno = ENOSYS;
++		return -1;
++	}
++
++	if (is_relative_path(path)) {
++		/* the kernel reports an absolute pathname; note that
++		 * absolute_path() only prepends the CWD as returned by
++		 * getcwd(), it resolves nothing */
++		abspath = absolute_path(path);
++		if (!abspath)
++			return -1;
++	}
++
++	if (flags & O_PATH)
++		fd = open(path, flags);
++	else
++		fd = open(path, O_PATH | O_CLOEXEC |
++				(flags & (O_NOFOLLOW | O_DIRECTORY)));
++	if (fd < 0)
++		goto fail;
++
++	/* O_PATH|O_NOFOLLOW returns a FD to the symlink itself */
++	if (fstat(fd, &st) != 0)
++		goto fail;
++	if (S_ISLNK(st.st_mode)) {
++		errno = ELOOP;
++		goto fail;
++	}
++
++	kpath = ul_fd_get_path(fd);
++	if (!kpath) {
++		errno = ENOSYS;		/* no /proc, no verification */
++		goto fail;
++	}
++
++	/* streq_paths() ignores duplicate and trailing slashes, but "." and
++	 * ".." in the requested path are refused as a symlink */
++	if (streq_paths(abspath ? abspath : path, kpath) != 1) {
++		errno = ELOOP;
++		goto fail;
++	}
++
++	if (!(flags & O_PATH)) {
++		char fdpath[UL_FDPATH_BUFSIZ];
++		int nfd = -1;
++
++		/* apply the caller's flags; the /proc link refers to the
++		 * verified file, the path is not resolved for the second time */
++		if (ul_fd_mkpath(fdpath, sizeof(fdpath), fd))
++			nfd = open(fdpath, flags, mode);
++		if (nfd < 0)
++			goto fail;
++		close(fd);
++		fd = nfd;
++	}
++
++	free(abspath);
++	free(kpath);
++	return fd;
++fail:
++	errsv = errno;
++	free(abspath);
++	free(kpath);
++	if (fd >= 0)
++		close(fd);
++	errno = errsv;
++	return -1;
++}
++#else /* !__linux__ */
++/* O_PATH and the /proc/self/fd/ names are Linux specific */
++static int open_no_symlinks_fallback(
++			const char *path __attribute__((__unused__)),
++			int flags __attribute__((__unused__)),
++			mode_t mode __attribute__((__unused__)))
++{
++	errno = ENOSYS;
++	return -1;
++}
++#endif /* __linux__ */
++
++/* Opens @path with the guarantee that no component of the path is a symbolic
++ * link, otherwise it fails with ELOOP.
++ */
++int ul_open_no_symlinks(const char *path, int flags, mode_t mode)
++{
++	int fd = ul_openat_resolve(AT_FDCWD, path, flags, mode,
++				   RESOLVE_NO_SYMLINKS);
++
++	/* openat2() is Linux 5.6+ */
++	if (fd < 0 && errno == ENOSYS)
++		fd = open_no_symlinks_fallback(path, flags, mode);
++
++	return fd;
++}
++
++#ifdef TEST_PROGRAM_FILEUTILS
++int main(int argc, char *argv[])
++{
++	if (argc < 2)
++		errx(EXIT_FAILURE, "Usage %s --{mkstemp,open-no-symlinks}", argv[0]);
++
++	if (strcmp(argv[1], "--mkstemp") == 0) {
++		FILE *f;
++		char *tmpname = NULL;
++
++		f = xfmkstemp(&tmpname, NULL, "test");
++		unlink(tmpname);
++		free(tmpname);
++		fclose(f);
++
++	} else if (strcmp(argv[1], "--open-no-symlinks") == 0) {
++#ifdef __linux__
++		int flags = O_PATH | O_CLOEXEC;
++#else
++		int flags = O_RDONLY | O_CLOEXEC;
++#endif
++		int fallback = 0;
++		char *name;
++		int fd, i;
++
++		if (argc < 3)
++			errx(EXIT_FAILURE, "no path specified");
++
++		for (i = 3; i < argc; i++) {
++			/* the fallback is used on kernels without openat2()
++			 * only, "--fallback" makes it testable anywhere */
++			if (strcmp(argv[i], "--fallback") == 0)
++				fallback = 1;
++			else if (strcmp(argv[i], "--rdonly") == 0)
++				flags = O_RDONLY | O_CLOEXEC;
++		}
++
++		if (fallback)
++			fd = open_no_symlinks_fallback(argv[2], flags, 0);
++		else
++			fd = ul_open_no_symlinks(argv[2], flags, 0);
++		if (fd < 0)
++			err(EXIT_FAILURE, "%s", argv[2]);
++
++		name = ul_fd_get_path(fd);
++		printf("%s\n", name);
++		free(name);
++		close(fd);
++	}
++	return EXIT_SUCCESS;
++}
++#endif
+-- 
+2.55.0
+

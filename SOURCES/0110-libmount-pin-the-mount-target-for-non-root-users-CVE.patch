@@ -1,0 +1,583 @@
+From c1b6f6a462ba0e41f55b5e3ab6f47a76108876c4 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Mon, 14 Sep 2026 11:13:29 +0200
+Subject: libmount: pin the mount target for non-root users [CVE-2026-53613]
+
+The target of a non-root mount always comes from fstab, but any
+component of that path may be a symlink the user controls.
+mnt_context_prepare_target() resolved it with mnt_resolve_path(), which
+follows symlinks with root privileges, and do_mount() then handed the
+result to mount(2), which resolved the string for a second time:
+
+	fstab:  /dev/sdb1 /mnt/usb vfat user,noauto 0 0
+	user:   rmdir /mnt/usb; ln -s /etc /mnt/usb
+	result: mount lands on /etc
+
+For restricted contexts the target is now opened as it comes from fstab
+with ul_open_no_symlinks() (openat2(RESOLVE_NO_SYMLINKS)), so a symlink
+anywhere in the path is refused by the kernel, and the name is read back
+from /proc/self/fd/<fd>.  The name is symlink free and normalized, and
+it is the very name the kernel later reports in mountinfo, which is what
+utab and non-root umount need.  This also means that a symlink in the
+target path of an fstab entry is no longer usable by non-root users,
+root has to write the real path.
+
+mount(2) takes no file descriptor, so the pinned FD is passed to it as
+the /proc/self/fd/<fd> magic link, which the kernel follows directly to
+the pinned directory; there is a fallback to the plain path when /proc
+is not available.  The source of a bind or move operation is a pathname
+resolved by mount(2) too and is pinned in the same way.
+
+Some mounts need more than one mount(2) call: a bind mount which also
+sets security flags, and any mount which sets a propagation flag.  The
+additional calls of do_mount_additional() run when the filesystem is
+already attached and they address the target by pathname again, so the
+pin does not protect them; and because the kernel ignores the security
+flags on a bind operation, the filesystem is usable without nosuid,
+nodev and noexec until the second call applies them.  For restricted
+users such a multi-step sequence is now refused in fix_optstr(), before
+any syscall.
+
+Backport notes:
+
+ * The patches are taken from the upstream stable/v2.42 branch; each of
+   the commits referenced below records the corresponding master commit
+   in its own message.  This is the rhel/9 patch (f058f00c9) reduced to
+   what 2.32 needs.
+
+ * Hooksets are 2.39+.  This branch has no hook_mount.c,
+   hook_mount_legacy.c or hook_owner.c, so this is not a cherry-pick but
+   the same change written into the old context_mount.c do_mount() flow.
+
+ * There is no new mount API here, mount(2) is the only path.  The
+   fd_tree / open_tree() / MOVE_MOUNT_T_EMPTY_PATH hunks of 0d3d55975
+   and 472cc3fb2 are dropped; only the mount(2) half of 85d16b341 is
+   taken.
+
+ * CVE-2026-53612 does not apply to this branch and its commits
+   (d0c5adaeb, bc43adb27, 70dae206e and the hook_owner / hook_idmap
+   hunks of 472cc3fb2) are not backported.  2.32 has neither
+   X-mount.owner=, X-mount.group=, X-mount.mode= nor X-mount.idmap=;
+   X-mount.mkdir is the only X-mount option and it already returns
+   -EPERM for restricted contexts.
+
+ * mnt_context_finalize_target() and the mount ID handling
+   (mnt_fs_fetch_ids(), mnt_id_from_fd(), mnt_id_from_path()) are not
+   backported either.  Nothing re-uses the target FD once the
+   filesystem is attached -- there are no MNT_STAGE_POST hooks -- and
+   2.32 has no statx() probe and no ID in the utab entry.
+
+ * The restriction of the mount *source* canonicalization
+   (CVE-2026-78410) is not part of this backport, only CVE-2026-53613
+   is requested for RHEL 8.  mnt_context_prepare_srcpath() therefore
+   still resolves the source of a bind mount with root privileges
+   before do_mount() pins it; the pin only removes the second path
+   resolution done by mount(2).  The comment above the source pin is
+   adjusted accordingly.
+
+ * The refusal of the multi-step mount(2) sequence is the legacy half of
+   31e37c1c7; upstream has the two mnt_context_is_restricted() checks in
+   hook_prepare() of hook_mount_legacy.c, here they are in fix_optstr(),
+   which is the place where this branch decides about the additional
+   mount(2) calls.  The other half of that commit -- safe_getenv() for
+   LIBMOUNT_FORCE_MOUNT2 [CVE-2026-53614] -- is not applicable, 2.32 has
+   no new mount API and no such variable.
+
+ * Upstream can still do these mounts because the new mount API applies
+   the flags in one step; 2.32 has mount(2) only, so a non-root "bind"
+   or propagation entry in fstab stops working.  libmount returns -EPERM
+   before any syscall and mount(8) reports "operation permitted for root
+   only" with the exit code 1.  (The "drop the suid permissions and try
+   again as the user" path of mount(8) is 2.35+, this branch does not
+   have it.)
+
+ * 2.32 has no mount namespace support, so the mnt_context_switch_ns()
+   hunks of mnt_context_prepare_target() are not applicable, and the
+   function ends with "return 0" here.  It now returns rc, otherwise a
+   refused target would be silently ignored.  For root the only error
+   which can reach that return is an allocation failure of
+   mnt_fs_set_target(), reporting it is an improvement as well.
+
+ * The pin failure is reported by DBG() only; this branch has no
+   mnt_context_sprintf_mesg() and the message would not be printed by
+   mnt_context_get_mount_excode() on the preparation path anyway.  The
+   user sees the kernel error -- "mount failed: Too many levels of
+   symbolic links" for a symlinked target.
+
+ * The man page is sys-utils/mount.8 (roff); 2.32 has no asciidoc man
+   pages yet.  The three paragraphs are the same text as in
+   mount.8.adoc on the rhel/9 branch.
+
+Verified with a SUID mount.static and "strace -u nobody", fstab entry
+"/tmp/ultest8/src /tmp/ultest8/mnt tmpfs noauto,user 0 0":
+
+	openat2(AT_FDCWD, "/tmp/ultest8/mnt", {flags=O_RDONLY|O_CLOEXEC|O_PATH,
+					       resolve=RESOLVE_NO_SYMLINKS}, 24) = 3
+	mount("/tmp/ultest8/src", "/proc/self/fd/3", "tmpfs",
+	      MS_MGC_VAL|MS_NOSUID|MS_NODEV|MS_NOEXEC, NULL) = 0
+
+and with /tmp/ultest8/mnt replaced by a symlink:
+
+	openat2(AT_FDCWD, "/tmp/ultest8/mnt", {...}, 24) = -1 ELOOP
+	mount.static: /tmp/ultest8/mnt: mount failed: Too many levels of symbolic links.
+	rc=32, nothing mounted
+
+The same two scenarios on a build without openat2() -- the RHEL 8
+kernels older than 8.7 -- use open_no_symlinks_fallback():
+
+	openat(AT_FDCWD, "/tmp/ultest8/mnt", O_RDONLY|O_CLOEXEC|O_PATH) = 3
+	readlink("/proc/self/fd/3", "/tmp/ultest8/mnt", 4096) = 16
+	mount("/tmp/ultest8/src", "/proc/self/fd/3", "tmpfs", ..., NULL) = 0
+
+	openat(AT_FDCWD, "/tmp/ultest8/mnt", O_RDONLY|O_CLOEXEC|O_PATH) = 3
+	readlink("/proc/self/fd/3", "/tmp/ultest8/evil", 4096) = 17
+	mount.static: /tmp/ultest8/mnt: mount failed: Too many levels of symbolic links.
+
+A symlinked ancestor directory of the mount point is refused the same
+way, "umount /tmp/ultest8/mnt" by the same non-root user still works
+(the pinned name matches mountinfo), and root is unchanged -- no
+openat2(), no /proc/self/fd/ path:
+
+	mount("/tmp/ultest8/src", "/tmp/ultest8/mnt", "tmpfs", ..., NULL) = 0
+
+With "/tmp/ultest8/src /tmp/ultest8/mnt none bind,noauto,user 0 0" the
+two mount(2) calls of the old code
+
+	mount("/proc/self/fd/4", "/proc/self/fd/3", 0x1a9521c0,
+	      MS_MGC_VAL|MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_BIND, NULL) = 0
+	mount("none", "/tmp/ultest8/mnt", NULL,
+	      MS_NOSUID|MS_NODEV|MS_NOEXEC|MS_REMOUNT|MS_BIND, NULL) = 0
+
+(the third argument is printed as a pointer because the kernel ignores
+the filesystem type for these operations) are replaced by
+
+	mount.static: /tmp/ultest8/mnt: operation permitted for root only.
+	rc=1, no syscall, nothing mounted
+
+while the tmpfs entry above, which needs one mount(2) call only, is
+untouched and root still gets both calls.
+
+CVE-2026-53613
+
+Reported-by: Xinyao Hu <ctf_0x01@foxmail.com>
+Addresses: RHEL-244823
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 0d3d55975aa3492c62fd345eac38f41cd166c0b0)
+(cherry picked from commit 472cc3fb2d4d47cca7aab2e0b59eb3fb8a9359ec)
+(cherry picked from commit 85d16b341f7232c9dbb4884b632e1e956584bee9)
+(cherry picked from commit f058f00c9fcf10786241e00ba1a2fd3891fb1e7f)
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ libmount/src/context.c       | 102 ++++++++++++++++++++++++++++++++---
+ libmount/src/context_mount.c |  96 ++++++++++++++++++++++++++++++---
+ libmount/src/mountP.h        |   6 +++
+ sys-utils/mount.8            |  47 ++++++++++++++++
+ 4 files changed, 235 insertions(+), 16 deletions(-)
+
+diff --git a/libmount/src/context.c b/libmount/src/context.c
+index 8e00b75a9..3d0717e72 100644
+--- a/libmount/src/context.c
++++ b/libmount/src/context.c
+@@ -60,6 +60,8 @@ struct libmnt_context *mnt_new_context(void)
+ 
+ 	cxt->loopdev_fd = -1;
+ 
++	cxt->fd_target = -1;
++
+ 	/* if we're really root and aren't running setuid */
+ 	cxt->restricted = (uid_t) 0 == ruid && ruid == euid ? 0 : 1;
+ 
+@@ -157,6 +159,7 @@ int mnt_reset_context(struct libmnt_context *cxt)
+ 	}
+ 
+ 	mnt_context_reset_status(cxt);
++	mnt_context_close_target_fd(cxt);
+ 
+ 	if (cxt->table_fltrcb)
+ 		mnt_context_set_tabfilter(cxt, NULL, NULL);
+@@ -286,6 +289,40 @@ int mnt_context_is_restricted(struct libmnt_context *cxt)
+ 	return cxt->restricted;
+ }
+ 
++int mnt_context_target_fd_required(struct libmnt_context *cxt)
++{
++	return mnt_context_is_restricted(cxt);
++}
++
++int mnt_context_get_target_fd(struct libmnt_context *cxt)
++{
++	assert(cxt);
++
++	if (cxt->fd_target < 0) {
++		const char *target = mnt_fs_get_target(cxt->fs);
++
++		if (!target) {
++			/* keep errno usable for callers which use -errno */
++			errno = EINVAL;
++			return -EINVAL;
++		}
++		cxt->fd_target = ul_open_no_symlinks(target,
++					O_PATH | O_CLOEXEC, 0);
++		DBG(CXT, ul_debugobj(cxt,"open target fd=%d [%s]",
++					cxt->fd_target, target));
++	}
++	return cxt->fd_target;
++}
++
++void mnt_context_close_target_fd(struct libmnt_context *cxt)
++{
++	assert(cxt);
++
++	if (cxt->fd_target >= 0)
++		close(cxt->fd_target);
++	cxt->fd_target = -1;
++}
++
+ /**
+  * mnt_context_set_optsmode
+  * @cxt: mount context
+@@ -1633,6 +1670,48 @@ static int mkdir_target(const char *tgt, struct libmnt_fs *fs)
+ 	return rc;
+ }
+ 
++/*
++ * Pin the target for non-root users.
++ *
++ * The target comes from fstab, but any component of the path may be a symlink
++ * controlled by the user. mnt_resolve_path() would follow it with root
++ * privileges and the mount would end up somewhere else. Open the path as it is
++ * with RESOLVE_NO_SYMLINKS instead, and then use the name the kernel gives to
++ * the pinned directory as the canonical target.
++ *
++ * The name is symlink free and normalized, and it's the same name the kernel
++ * later reports in mountinfo -- utab and non-root umount rely on that.
++ */
++static int pin_target(struct libmnt_context *cxt)
++{
++	const char *tgt;
++	char *path;
++	int fd, rc = 0;
++
++	fd = mnt_context_get_target_fd(cxt);
++	if (fd < 0) {
++		/* note that the kernel refuses a symlink in the path with
++		 * ELOOP, mount(8) reports it as "mount failed: Too many
++		 * levels of symbolic links" */
++		rc = -errno;
++		DBG(CXT, ul_debugobj(cxt, "failed to pin target [rc=%d]", rc));
++		return rc;
++	}
++
++	path = ul_fd_get_path(fd);
++	if (!path) {
++		DBG(CXT, ul_debugobj(cxt, "failed to read pinned target path"));
++		return -errno;
++	}
++
++	tgt = mnt_fs_get_target(cxt->fs);
++	if (!tgt || strcmp(path, tgt) != 0)
++		rc = mnt_fs_set_target(cxt->fs, path);
++
++	free(path);
++	return rc;
++}
++
+ int mnt_context_prepare_target(struct libmnt_context *cxt)
+ {
+ 	const char *tgt;
+@@ -1660,20 +1739,27 @@ int mnt_context_prepare_target(struct libmnt_context *cxt)
+ 			return rc;	/* mkdir or parse error */
+ 	}
+ 
+-	/* canonicalize the path */
+-	cache = mnt_context_get_cache(cxt);
+-	if (cache) {
+-		char *path = mnt_resolve_path(tgt, cache);
+-		if (path && strcmp(path, tgt) != 0)
+-			rc = mnt_fs_set_target(cxt->fs, path);
++	/* canonicalize the path; for non-root users this is done from the
++	 * pinned target FD, see pin_target() */
++	if (!mnt_context_target_fd_required(cxt)) {
++		cache = mnt_context_get_cache(cxt);
++		if (cache) {
++			char *path = mnt_resolve_path(tgt, cache);
++			if (path && strcmp(path, tgt) != 0)
++				rc = mnt_fs_set_target(cxt->fs, path);
++		}
+ 	}
+ 
++	if (rc == 0 && mnt_context_target_fd_required(cxt))
++		rc = pin_target(cxt);
++
+ 	if (rc)
+-		DBG(CXT, ul_debugobj(cxt, "failed to prepare target '%s'", tgt));
++		DBG(CXT, ul_debugobj(cxt, "failed to prepare target '%s' [rc=%d]",
++					tgt, rc));
+ 	else
+ 		DBG(CXT, ul_debugobj(cxt, "final target '%s'",
+ 					mnt_fs_get_target(cxt->fs)));
+-	return 0;
++	return rc;
+ }
+ 
+ /* Guess type, but not set to cxt->fs, always use free() for the result. It's
+diff --git a/libmount/src/context_mount.c b/libmount/src/context_mount.c
+index a8e84127c..8199887e7 100644
+--- a/libmount/src/context_mount.c
++++ b/libmount/src/context_mount.c
+@@ -22,6 +22,7 @@
+ #include "linux_version.h"
+ #include "mountP.h"
+ #include "strutils.h"
++#include "fileutils.h"
+ 
+ /*
+  * Kernel supports only one MS_PROPAGATION flag change by one mount(2) syscall,
+@@ -261,7 +262,15 @@ static int fix_optstr(struct libmnt_context *cxt)
+ 		free(fs->user_optstr);
+ 		fs->user_optstr = NULL;
+ 	}
++
++	/* A multi-step mount(2) sequence is not atomic: between the calls the
++	 * filesystem is already attached, but without the security flags
++	 * (nosuid, noexec, ...), and the additional calls address the target
++	 * by pathname again.  Refuse it for non-root users.
++	 */
+ 	if (cxt->mountflags & MS_PROPAGATION) {
++		if (mnt_context_is_restricted(cxt))
++			goto eperm;
+ 		rc = init_propagation(cxt);
+ 		if (rc)
+ 			return rc;
+@@ -269,6 +278,8 @@ static int fix_optstr(struct libmnt_context *cxt)
+ 	if ((cxt->mountflags & MS_BIND)
+ 	    && (cxt->mountflags & MNT_BIND_SETTABLE)
+ 	    && !(cxt->mountflags & MS_REMOUNT)) {
++		if (mnt_context_is_restricted(cxt))
++			goto eperm;
+ 		rc = init_bind_remount(cxt);
+ 		if (rc)
+ 			return rc;
+@@ -359,6 +370,9 @@ done:
+ 	if (rc)
+ 		rc = -MNT_ERR_MOUNTOPT;
+ 	return rc;
++eperm:
++	DBG(CXT, ul_debugobj(cxt, "multi-step mount(2) refused for non-root user"));
++	return -EPERM;
+ }
+ 
+ /*
+@@ -724,8 +738,9 @@ static int do_mount_additional(struct libmnt_context *cxt,
+  */
+ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ {
+-	int rc = 0;
+-	const char *src, *target, *type;
++	int rc = 0, fd_src = -1;
++	const char *src, *target, *mnt_target, *type;
++	char tgtfdpath[UL_FDPATH_BUFSIZ], srcfdpath[UL_FDPATH_BUFSIZ];
+ 	unsigned long flags;
+ 
+ 	assert(cxt);
+@@ -769,11 +784,69 @@ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ 	if (try_type)
+ 		flags |= MS_SILENT;
+ 
++	/* For non-root users mount(2) the already pinned target FD rather
++	 * than the path. mount(2) resolves the path for the second time and
++	 * the result does not have to be the directory we have verified in
++	 * mnt_context_prepare_target(). The kernel follows the /proc/ link
++	 * directly to the pinned directory, and mountinfo still reports the
++	 * real mountpoint path.
++	 *
++	 * Fallback to the path if /proc is not available; mount(2) is racy by
++	 * design, let's harden it where we can.
++	 */
++	mnt_target = target;
++
++	if (mnt_context_target_fd_required(cxt)) {
++		int fd = mnt_context_get_target_fd(cxt);
++		struct stat st;
++
++		if (fd < 0)
++			return -errno;
++		if (!ul_fd_mkpath(tgtfdpath, sizeof(tgtfdpath), fd))
++			return -errno;
++
++		if (stat(tgtfdpath, &st) == 0)
++			mnt_target = tgtfdpath;
++		else
++			DBG(CXT, ul_debugobj(cxt, "%s not accessible, "
++					"using target path", tgtfdpath));
++	}
++
++	/* The source of a bind or move operation is a pathname resolved by
++	 * mount(2) too, so for non-root users pin it in the same way as the
++	 * target. Otherwise a symlink in the source path is followed and the
++	 * kernel attaches something else than the directory from fstab.
++	 *
++	 * Note that mnt_context_prepare_srcpath() has already canonicalized
++	 * the path with root privileges; the pin closes the window between
++	 * that and the path resolution done by mount(2).
++	 */
++	if (mnt_context_target_fd_required(cxt)
++	    && (flags & (MS_BIND | MS_MOVE))
++	    && !(flags & MS_REMOUNT)
++	    && mnt_fs_get_srcpath(cxt->fs)) {
++		struct stat st;
++
++		fd_src = ul_open_no_symlinks(src, O_PATH | O_CLOEXEC, 0);
++		if (fd_src < 0)
++			return -errno;
++		if (!ul_fd_mkpath(srcfdpath, sizeof(srcfdpath), fd_src)) {
++			rc = -errno;
++			goto done;
++		}
++
++		if (stat(srcfdpath, &st) == 0)
++			src = srcfdpath;
++		else
++			DBG(CXT, ul_debugobj(cxt, "%s not accessible, "
++					"using source path", srcfdpath));
++	}
++
+ 	DBG(CXT, ul_debugobj(cxt, "%smount(2) "
+ 			"[source=%s, target=%s, type=%s, "
+ 			" mountflags=0x%08lx, mountdata=%s]",
+ 			mnt_context_is_fake(cxt) ? "(FAKE) " : "",
+-			src, target, type,
++			src, mnt_target, type,
+ 			flags, cxt->mountdata ? "yes" : "<none>"));
+ 
+ 	if (mnt_context_is_fake(cxt)) {
+@@ -786,17 +859,20 @@ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ 		/*
+ 		 * propagation flags *only*
+ 		 */
+-		if (do_mount_additional(cxt, target, flags, &cxt->syscall_status))
+-			return -MNT_ERR_APPLYFLAGS;
++		if (do_mount_additional(cxt, target, flags, &cxt->syscall_status)) {
++			rc = -MNT_ERR_APPLYFLAGS;
++			goto done;
++		}
+ 	} else {
+ 		/*
+ 		 * regular mount
+ 		 */
+-		if (mount(src, target, type, flags, cxt->mountdata)) {
++		if (mount(src, mnt_target, type, flags, cxt->mountdata)) {
+ 			cxt->syscall_status = -errno;
+ 			DBG(CXT, ul_debugobj(cxt, "mount(2) failed [errno=%d %m]",
+ 							-cxt->syscall_status));
+-			return -cxt->syscall_status;
++			rc = -cxt->syscall_status;
++			goto done;
+ 		}
+ 		DBG(CXT, ul_debugobj(cxt, "  success"));
+ 		cxt->syscall_status = 0;
+@@ -808,7 +884,8 @@ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ 		    && do_mount_additional(cxt, target, flags, NULL)) {
+ 
+ 			/* TODO: call umount? */
+-			return -MNT_ERR_APPLYFLAGS;
++			rc = -MNT_ERR_APPLYFLAGS;
++			goto done;
+ 		}
+ 	}
+ 
+@@ -818,6 +895,9 @@ static int do_mount(struct libmnt_context *cxt, const char *try_type)
+ 			rc = mnt_fs_set_fstype(fs, try_type);
+ 	}
+ 
++done:
++	if (fd_src >= 0)
++		close(fd_src);
+ 	return rc;
+ }
+ 
+diff --git a/libmount/src/mountP.h b/libmount/src/mountP.h
+index 64a507e61..4b6b9ce09 100644
+--- a/libmount/src/mountP.h
++++ b/libmount/src/mountP.h
+@@ -331,6 +331,8 @@ struct libmnt_context
+ 
+ 	int	syscall_status;	/* 1: not called yet, 0: success, <0: -errno */
+ 
++	int	fd_target;	/* pinned target fd (RESOLVE_NO_SYMLINKS) */
++
+ 	unsigned int	enabled_textdomain : 1;		/* bindtextdomain() called */
+ };
+ 
+@@ -410,6 +412,10 @@ extern int mnt_context_prepare_update(struct libmnt_context *cxt);
+ extern int mnt_context_merge_mflags(struct libmnt_context *cxt);
+ extern int mnt_context_update_tabs(struct libmnt_context *cxt);
+ 
++extern int mnt_context_target_fd_required(struct libmnt_context *cxt);
++extern int mnt_context_get_target_fd(struct libmnt_context *cxt);
++extern void mnt_context_close_target_fd(struct libmnt_context *cxt);
++
+ extern int mnt_context_umount_setopt(struct libmnt_context *cxt, int c, char *arg);
+ extern int mnt_context_mount_setopt(struct libmnt_context *cxt, int c, char *arg);
+ 
+diff --git a/sys-utils/mount.8 b/sys-utils/mount.8
+index 291e65cb1..118c897c7 100644
+--- a/sys-utils/mount.8
++++ b/sys-utils/mount.8
+@@ -326,6 +326,53 @@ The
+ .B group
+ option is similar, with the restriction that the user must be
+ member of the group of the special file.
++.PP
++For unprivileged users the mount target from
++.I fstab
++is opened before the filesystem is attached and the mount operation uses this
++file descriptor rather than the path, so the path is not resolved for the
++second time by the kernel.  Symbolic links are not followed in the target path
++at all, a
++.I fstab
++entry with a symbolic link in the mount point path is unusable for
++unprivileged users and the mount fails.
++.PP
++.B WARNING:
++The pinned target is referenced by a
++.I /proc/self/fd/
++path, which requires a mounted
++.I /proc
++filesystem.  Without
++.I /proc
++the target path is resolved by the kernel again and the inherent
++time-of-check-to-time-of-use (TOCTOU) window between the verification and the
++mount operation remains; if an ancestor directory of the mount target is
++writable by the unprivileged user, a path component could be swapped to
++redirect the mount to an unintended location.  Administrators should ensure
++that mount target paths for
++.B user
++mounts do not traverse directories writable by unprivileged users.
++.PP
++A
++.I fstab
++entry which cannot be mounted by one kernel operation is not supported for
++unprivileged users.  This is the case for
++.B bind
++(the
++.BR nosuid ,
++.B nodev
++and
++.B noexec
++flags implied by the
++.B user
++option have to be applied by an additional remount operation, and until then
++the filesystem would be attached without them) and for the propagation flags
++.RB ( shared ,
++.BR slave ,
++.BR private ,
++.BR unbindable ,
++and their recursive variants).  Such entries are refused, only root can mount
++them.
+ 
+ .SS Bind mount operation
+ Remount part of the file hierarchy somewhere else.  The call is:
+-- 
+2.55.0
+

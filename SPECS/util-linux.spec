@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.32.1
-Release: 48%{?dist}
+Release: 50%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 Group: System Environment/Base
 URL: http://en.wikipedia.org/wiki/Util-linux
@@ -310,6 +310,13 @@ Patch105: 0105-lslogins-use-sd_journal_get_data-in-proper-way.patch
 Patch106: 0106-libblkid-use-snprintf-instead-of-sprintf.patch
 # RHEL-133946 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
 Patch107: 0107-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
+# RHEL-215636 - libblkid: use-after-free in nested partition probing [CVE-2026-13595]
+Patch108: 0108-libblkid-fix-use-after-free-in-nested-partition-prob.patch
+# RHEL-244823 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
+Patch109: 0109-lib-fileutils-add-safe-FD-openat2-helpers.patch
+Patch110: 0110-libmount-pin-the-mount-target-for-non-root-users-CVE.patch
+# RHEL-283368- libblkid: dos: validate EBR data and links within extended partition
+Patch111: 0111-libblkid-dos-validate-EBR-data-and-links-within-exte.patch
 
 
 %description
@@ -1159,6 +1166,13 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Mon Oct 26 2026 Karel Zak <kzak@redhat.com> 2.32.1-50
+- fix RHEL-283368 - libblkid: validate EBR data [CVE-2026-53615]
+
+* Mon Sep 14 2026 Karel Zak <kzak@redhat.com> 2.32.1-49
+- fix RHEL-215636 - libblkid: use-after-free in nested partition probing [CVE-2026-13595]
+- fix RHEL-244823 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
+
 * Mon Dec 15 2025 Karel Zak <kzak@redhat.com> 2.32.1-48
 - fix RHEL-134296 - libblkid: use snprintf() instead of sprintf()
 - fix RHEL-133946 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
