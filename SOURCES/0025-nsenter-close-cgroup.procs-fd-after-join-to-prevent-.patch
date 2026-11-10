@@ -1,8 +1,8 @@
-From c0e10f1eb33a5aec118aa57ced1448c0381415d0 Mon Sep 17 00:00:00 2001
+From d1044b646f8ee0383b965fc8a654602375409795 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 15:11:57 +0200
-Subject: nsenter: close cgroup.procs fd after join to prevent authority leak
- [CVE-2026-78408]
+Subject: [PATCH 25/32] nsenter: close cgroup.procs fd after join to prevent
+ authority leak [CVE-2026-78408]
 
 The --join-cgroup option opens the target's cgroup.procs while running
 as root and writes nsenter's own PID to migrate itself. The descriptor
@@ -38,6 +38,7 @@ load_interp() opens in unshare (binfmt_misc support) do not exist in
 this branch, so those O_CLOEXEC hunks are dropped.
 
 Introduced-by: b40650b71a74 ("nsenter: add option -c to join the cgroup of target process")
+Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 003c622428f09fc6544ed06b533d278dc14f88e0)
 (cherry picked from commit afe067c979b9ba2cbe856f7c6411210120ea62aa)
 Signed-off-by: Karel Zak <kzak@redhat.com>

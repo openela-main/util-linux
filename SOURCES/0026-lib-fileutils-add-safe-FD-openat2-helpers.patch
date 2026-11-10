@@ -1,7 +1,7 @@
-From fa1e276bf825bb6ef5044ad65f63457f6ff42c13 Mon Sep 17 00:00:00 2001
+From 941b7768f2ca9a58f6cc667af3eff06e98d19d23 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 17:39:26 +0200
-Subject: lib/fileutils: add safe FD/openat2 helpers
+Subject: [PATCH 26/32] lib/fileutils: add safe FD/openat2 helpers
 
 Backport of the lib/fileutils infrastructure the libmount TOCTOU and
 SUID hardening depends on.  No functional change on its own; nothing in
@@ -52,6 +52,8 @@ Backport notes:
    test_fileutils has to link libcommon.la.  Upstream did this in the
    unrelated cleanup 1aff73db2; only the single line is taken.
 
+Addresses: RHEL-244824
+Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit f0118f97075d583df457734c111fc04c91e4aa42)
 (cherry picked from commit 1426aa06ff2f6a21cba9102c35e3577641b356ff)
 (cherry picked from commit fde56542caf5cbca449fe583cecca37d6bab71c6)

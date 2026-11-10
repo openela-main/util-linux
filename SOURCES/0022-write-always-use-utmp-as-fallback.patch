@@ -1,0 +1,122 @@
+From 1a06fc9c79b27fb842f000d26b1122d63411c5d9 Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Wed, 13 May 2026 11:13:03 +0200
+Subject: [PATCH 22/23] write: always use utmp as fallback
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The systemd session list may not cover all terminals (e.g., screen,
+tmux, or old-style logins). Remove the "if systemd else utmp" pattern
+and always fall through to utmp when the target user or tty is not
+found in systemd sessions.
+
+Also make sd_get_sessions() and sd_session_get_username() failures
+non-fatal — silently fall through to utmp instead of calling errx().
+
+Addresses: https://redhat.atlassian.net/browse/RHEL-157244
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 3d84e9af768f904660d962720c4c03735e86472b)
+---
+ term-utils/write.c | 50 +++++++++++++++++++++++-----------------------
+ 1 file changed, 25 insertions(+), 25 deletions(-)
+
+diff --git a/term-utils/write.c b/term-utils/write.c
+index 3784f0300..fb19e35f4 100644
+--- a/term-utils/write.c
++++ b/term-utils/write.c
+@@ -140,17 +140,16 @@ static int check_utmp(const struct write_control *ctl)
+ 	if (sd_booted() > 0) {
+ 		char **sessions_list;
+ 		int sessions = sd_get_sessions(&sessions_list);
++
+ 		if (sessions < 0)
+-			errx(EXIT_FAILURE, _("error getting sessions: %s"),
+-				strerror(-sessions));
++			goto utmp;
+ 
+ 		for (int i = 0; i < sessions; i++) {
+ 
+ 			char *name, *tty;
+-			int r;
+ 
+-			if ((r = sd_session_get_username(sessions_list[i], &name)) < 0)
+-				errx(EXIT_FAILURE, _("get user name failed: %s"), strerror (-r));
++			if (sd_session_get_username(sessions_list[i], &name) < 0)
++				continue;
+ 			if (sd_session_get_tty(sessions_list[i], &tty) < 0) {
+ 				free(name);
+ 				continue;
+@@ -169,23 +168,24 @@ static int check_utmp(const struct write_control *ctl)
+ 		for (int i = 0; i < sessions; i++)
+ 			free(sessions_list[i]);
+ 		free(sessions_list);
+-	} else {
+-#endif
+-		utmpxname(_PATH_UTMP);
+-		setutxent();
+ 
+-		while ((u = getutxent())) {
+-			if (strncmp(ctl->dst_login, u->ut_user, sizeof(u->ut_user)) == 0 &&
+-		    		strncmp(ctl->dst_tty_name, u->ut_line, sizeof(u->ut_line)) == 0) {
+-				res = 0;
+-				break;
+-			}
+-		}
+-
+-		endutxent();
+-#if defined(USE_SYSTEMD) && HAVE_DECL_SD_SESSION_GET_USERNAME == 1
++		if (res == 0)
++			return res;
+ 	}
++utmp:
+ #endif
++	utmpxname(_PATH_UTMP);
++	setutxent();
++
++	while ((u = getutxent())) {
++		if (strncmp(ctl->dst_login, u->ut_user, sizeof(u->ut_user)) == 0 &&
++	    		strncmp(ctl->dst_tty_name, u->ut_line, sizeof(u->ut_line)) == 0) {
++			res = 0;
++			break;
++		}
++	}
++
++	endutxent();
+ 	return res;
+ }
+ 
+@@ -211,16 +211,15 @@ static void search_utmp(struct write_control *ctl)
+ 		char path[256];
+ 		char **sessions_list;
+ 		int sessions = sd_get_sessions(&sessions_list);
++
+ 		if (sessions < 0)
+-			errx(EXIT_FAILURE, _("error getting sessions: %s"),
+-			     strerror(-sessions));
++			goto utmp;
+ 
+ 		for (int i = 0; i < sessions; i++) {
+ 			char *name, *tty;
+-			int r;
+ 
+-			if ((r = sd_session_get_username(sessions_list[i], &name)) < 0)
+-				errx(EXIT_FAILURE, _("get user name failed: %s"), strerror (-r));
++			if (sd_session_get_username(sessions_list[i], &name) < 0)
++				continue;
+ 
+ 			if  (strcmp(ctl->dst_login, name) != 0) {
+ 				free(name);
+@@ -266,7 +265,8 @@ static void search_utmp(struct write_control *ctl)
+ 		for (int i = 0; i < sessions; i++)
+ 			free(sessions_list[i]);
+ 		free(sessions_list);
+-	} else
++	}
++utmp:
+ #endif
+ 	{
+ 		char path[sizeof(u->ut_line) + 6];
+-- 
+2.52.0
+

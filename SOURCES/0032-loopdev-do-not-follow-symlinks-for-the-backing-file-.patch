@@ -1,4 +1,4 @@
-From e913720fb9060aaaac5ebc36789608316dcad154 Mon Sep 17 00:00:00 2001
+From ab3d105cf7ac736bbb574362df31b0809290bce8 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 19:13:52 +0200
 Subject: loopdev: do not follow symlinks for the backing file [CVE-2026-27456]
@@ -45,7 +45,7 @@ Backport notes:
 
 CVE-2026-27456
 
-Addresses: RHEL-261030
+Addresses: RHEL-261031
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 0ba0f14caa812349424df0da00ac2d97fee9d972)
 (cherry picked from commit 8eda6a43262a0e98cd1caa07a8da78523e178575)

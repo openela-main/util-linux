@@ -1,8 +1,8 @@
-From f620399d24e4d54dad69cb354d11ebe649786029 Mon Sep 17 00:00:00 2001
+From 0426da01fba5efcb89e8432dc3265fb4dc71fe1d Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 17:42:44 +0200
-Subject: libmount: fix SUID bypass via LIBMOUNT_FORCE_MOUNT2 and legacy mount
- path [CVE-2026-53614]
+Subject: [PATCH 27/32] libmount: fix SUID bypass via LIBMOUNT_FORCE_MOUNT2 and
+ legacy mount path [CVE-2026-53614]
 
 Use safe_getenv() for LIBMOUNT_FORCE_MOUNT2 to ignore the variable
 in SUID context, consistent with LIBMOUNT_FSTAB and other sensitive
@@ -20,8 +20,10 @@ branch, which records the master commit in its own message.
 CVE-2026-53614
 
 Reported-by: Xinyao Hu <ctf_0x01@foxmail.com>
+Addresses: RHEL-244836
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 31e37c1c7dcf25b76ccf41391fe934a75644c661)
+Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libmount/src/hook_mount.c        | 3 ++-
  libmount/src/hook_mount_legacy.c | 8 ++++++++

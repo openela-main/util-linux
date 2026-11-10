@@ -1,0 +1,36 @@
+From 738648cdf2197807e4020e2d88474fbc6b5718e1 Mon Sep 17 00:00:00 2001
+From: WanBingjiang <614699596@qq.com>
+Date: Thu, 27 Feb 2025 15:13:37 +0800
+Subject: sys-utils/lscpu: Change object type to SCOLS_JSON_STRING if data ==
+ "-"
+
+(cherry picked from commit 049901c63ea7ad8a1e0ba4feeaf7360dbf4bdc2f)
+
+Addresses: https://issues.redhat.com/browse/RHEL-148508
+Signed-off-by: Karel Zak <kzak@redhat.com>
+---
+ sys-utils/lscpu.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/sys-utils/lscpu.c b/sys-utils/lscpu.c
+index c073fc0dc..46b2569d2 100644
+--- a/sys-utils/lscpu.c
++++ b/sys-utils/lscpu.c
+@@ -786,9 +786,13 @@ static void print_cpus_readable(struct lscpu_cxt *cxt, int cols[], size_t ncols)
+ 			err(EXIT_FAILURE, _("failed to allocate output line"));
+ 
+ 		for (c = 0; c < ncols; c++) {
++			struct libscols_column *cl;
+ 			data = get_cell_data(cxt, cpu, cols[c], buf, sizeof(buf));
+-			if (!data || !*data)
++			if (!data || !*data) {
+ 				data = "-";
++				cl = scols_table_get_column(tb, c);
++				scols_column_set_json_type(cl, SCOLS_JSON_STRING);
++			}
+ 			if (scols_line_set_data(ln, c, data))
+ 				err(EXIT_FAILURE, _("failed to add output data"));
+ 		}
+-- 
+2.52.0
+

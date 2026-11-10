@@ -1,8 +1,8 @@
-From 7f66fc529eb0231d933fdd5128f61a32d1c43baa Mon Sep 17 00:00:00 2001
+From 8d0aa103624e98157b698c67f6bcf74b9af63478 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 18:23:05 +0200
-Subject: libmount: pin the mount target for non-root users [CVE-2026-53613,
- CVE-2026-53612]
+Subject: [PATCH 28/32] libmount: pin the mount target for non-root users
+ [CVE-2026-53613, CVE-2026-53612]
 
 The target of a non-root mount always comes from fstab, but any
 component of that path may be a symlink the user controls.
@@ -85,6 +85,8 @@ CVE-2026-53613
 CVE-2026-53612
 
 Reported-by: Xinyao Hu <ctf_0x01@foxmail.com>
+Addresses: RHEL-244824
+Addresses: RHEL-244832
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 0d3d55975aa3492c62fd345eac38f41cd166c0b0)
 (cherry picked from commit d0c5adaeb3a3d823aba1377794de8f009b8152cc)
@@ -92,6 +94,7 @@ Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 472cc3fb2d4d47cca7aab2e0b59eb3fb8a9359ec)
 (cherry picked from commit 85d16b341f7232c9dbb4884b632e1e956584bee9)
 (cherry picked from commit 70dae206e8fd3f7dbc8a920e1e243568943bb73f)
+Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libmount/src/context.c           | 102 +++++++++++++++++++++++++++++++
  libmount/src/context_mount.c     |  75 +++++++++++++++++++++--

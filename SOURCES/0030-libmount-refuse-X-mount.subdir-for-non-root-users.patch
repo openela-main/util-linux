@@ -1,7 +1,7 @@
-From 261c83b6c843b8b508b9709ef2047eaa76a56cf2 Mon Sep 17 00:00:00 2001
+From cc36ec54740f1c50c9f7f2135cb0b87b5f509af1 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 19:01:30 +0200
-Subject: libmount: refuse X-mount.subdir for non-root users
+Subject: [PATCH 30/32] libmount: refuse X-mount.subdir for non-root users
 
 X-mount.subdir= is implemented by mounting the filesystem root on a
 temporary target in an unshared namespace, binding the subdirectory to
@@ -37,8 +37,12 @@ Backport notes:
    kernel, not only before 6.15.  The debug message and the manual page
    wording are adjusted accordingly.
 
+ * No separate tracker; the option was never covered by a CVE, this is
+   the mitigation for the unsafe multi-step implementation.
+
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 8bbd56b396ebb8449e5a39391c784df35919827b)
+Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libmount/src/hook_subdir.c | 10 ++++++++++
  sys-utils/mount.8.adoc     |  2 ++

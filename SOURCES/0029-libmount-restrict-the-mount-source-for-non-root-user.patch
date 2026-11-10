@@ -1,7 +1,7 @@
-From 29f062309053d268b55b768b52cec468bcc03703 Mon Sep 17 00:00:00 2001
+From 3badede6e1f96acb9247d4c5d818e9ff9bccd1da Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 18:55:19 +0200
-Subject: libmount: restrict the mount source for non-root users
+Subject: [PATCH 29/32] libmount: restrict the mount source for non-root users
  [CVE-2026-78410]
 
 Two ways in which the source of a restricted (non-root) mount was
@@ -59,11 +59,13 @@ Backport notes:
 
 CVE-2026-78410
 
+Addresses: RHEL-247663
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 90a1f3b5b134b775dd30a46155064731ba40c519)
 (cherry picked from commit 6051830a27a852fed92ebd8493e57aa3d5d9cf18)
 (cherry picked from commit 9a8d0d60c55d3a55f89f6f75a17bae31bc5ee1c6)
 (cherry picked from commit a323dddbcd1ed05a10e7e870b3e1a48b4ed44a43)
+Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libmount/src/context.c    | 21 +++++++++++++++++++--
  libmount/src/hook_idmap.c |  6 ++++--

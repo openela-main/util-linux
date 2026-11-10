@@ -1,8 +1,8 @@
-From 482998fd86c3d7bdd91d45dfea48e7194e6a4c7e Mon Sep 17 00:00:00 2001
+From 0cd3a0d681749ee60e53c56e7140dc90154ac739 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Fri, 11 Sep 2026 19:06:16 +0200
-Subject: libmount: skip post-mount hooks after a failed mount helper
- [CVE-2026-76642]
+Subject: [PATCH 31/32] libmount: skip post-mount hooks after a failed mount
+ helper [CVE-2026-76642]
 
 When an external mount.<type> helper exits nonzero, exec_helper() stores
 the failure in helper_status but returns zero -- zero means the
@@ -69,8 +69,10 @@ Audit of the hooks registered at these stages, unchanged from upstream:
 
 CVE-2026-76642
 
+Addresses: RHEL-247658
 Signed-off-by: Karel Zak <kzak@redhat.com>
 (cherry picked from commit 1d14676ea70003e9f5b2a6a76af0cadb1190411a)
+Signed-off-by: Karel Zak <kzak@redhat.com>
 ---
  libmount/src/context_mount.c | 23 ++++++++++++++++++++---
  libmount/src/hook_loopdev.c  | 13 +++++++++++--

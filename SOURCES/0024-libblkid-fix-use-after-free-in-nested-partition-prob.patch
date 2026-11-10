@@ -1,8 +1,8 @@
-From 701e80a943562894ed7e93ab695b0fdeca5e0738 Mon Sep 17 00:00:00 2001
+From 04c5250d23c1923fd7b45fadacffdd85aa2b4042 Mon Sep 17 00:00:00 2001
 From: Karel Zak <kzak@redhat.com>
 Date: Thu, 7 May 2026 12:50:48 +0200
-Subject: libblkid: fix use-after-free in nested partition probing
- [CVE-2026-13595]
+Subject: [PATCH 24/32] libblkid: fix use-after-free in nested partition
+ probing [CVE-2026-13595]
 
 The partitions list stores partitions in a contiguous array grown by
 reallocarray(). When the array is reallocated to a new address, all
