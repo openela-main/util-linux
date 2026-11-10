@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 25%{?dist}
+Release: 28%{?dist}
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -40,11 +40,11 @@ BuildRequires: librtas-devel
 %endif
 %{?sysusers_requires_compat}
 
-# enable if make changes to build-system
-#BuildRequires: autoconf
-#BuildRequires: automake
-#BuildRequires: libtool
-#BuildRequires: bison
+# enabled as we make changes to build-system in the patches
+BuildRequires: autoconf
+BuildRequires: automake
+BuildRequires: libtool
+BuildRequires: bison
 
 ### Sources
 Source0: ftp://ftp.kernel.org/pub/linux/utils/util-linux/v%{upstream_major}/util-linux-%{upstream_version}.tar.xz
@@ -253,6 +253,16 @@ Patch86: 0086-libblkid-use-snprintf-instead-of-sprintf.patch
 Patch87: 0087-libfdisk-dos-fix-off-by-one-in-maximum-last-sector-c.patch
 # RHEL-133956 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
 Patch88: 0088-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
+# RHEL-192480 - script: fix use of utempter (utmp registration)
+Patch89: 0089-llib-pty-session-split-PTY-and-signalfd-setup.patch
+Patch90: 0090-script-fix-use-of-utempter.patch
+# RHEL-153737 - agetty: fix stdin conversion to tty name
+Patch91: 0091-agetty-fix-stdin-conversion-to-tty-name.patch
+# RHEL-215634 - libblkid: use-after-free in nested partition probing [CVE-2026-13595]
+Patch92: 0092-libblkid-fix-use-after-free-in-nested-partition-prob.patch
+# RHEL-244825 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
+Patch93: 0093-lib-fileutils-add-safe-FD-openat2-helpers.patch
+Patch94: 0094-libmount-pin-the-mount-target-for-non-root-users-CVE.patch
 
 
 %description
@@ -451,6 +461,9 @@ chfn and chsh utilities with dependence on libuser
 
 %build
 unset LINGUAS || :
+
+# unfortunately, we did changes to build-system
+./autogen.sh
 
 export CFLAGS="-D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 $RPM_OPT_FLAGS"
 export SUID_CFLAGS="-fpie"
@@ -1088,6 +1101,16 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Mon Sep 14 2026 Karel Zak <kzak@redhat.com> 2.37.4-28
+- fix RHEL-215634 - libblkid: use-after-free in nested partition probing [CVE-2026-13595]
+- fix RHEL-244825 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
+
+* Thu Aug 13 2026 Karel Zak <kzak@redhat.com> 2.37.4-27
+- fix RHEL-153737 - agetty: fix stdin conversion to tty name
+
+* Thu Jul 16 2026 Karel Zak <kzak@redhat.com> 2.37.4-26
+- fix RHEL-192480 - script: fix use of utempter (utmp registration)
+
 * Mon Jan 19 2026 Karel Zak <kzak@redhat.com> 2.37.4-25
 - fix RHEL-132706 - use sysusers.d for uuidd
 

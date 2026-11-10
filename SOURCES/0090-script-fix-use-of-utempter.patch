@@ -1,0 +1,44 @@
+From e547bdcbd4196114c512cf6d2fe1cecf5bbcfcbb Mon Sep 17 00:00:00 2001
+From: Karel Zak <kzak@redhat.com>
+Date: Wed, 16 Nov 2022 09:19:18 +0100
+Subject: [PATCH 90/90] script: fix use of utempter
+
+libutempter uses SIGCHLD, but script(1) pty implementation completely
+control all signals by signalfd and utempter does not work.
+
+The solution is to setup signalfd later (after libutempter use).
+
+Fixes: https://github.com/util-linux/util-linux/issues/1904
+Signed-off-by: Karel Zak <kzak@redhat.com>
+(cherry picked from commit 6ed644fbf4869a7e042826900eff531cf6660cfb)
+---
+ term-utils/script.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/term-utils/script.c b/term-utils/script.c
+index c8b55c8ef..be2c935d5 100644
+--- a/term-utils/script.c
++++ b/term-utils/script.c
+@@ -938,13 +938,16 @@ int main(int argc, char **argv)
+ 		printf(_(".\n"));
+ 	}
+ 
+-#ifdef HAVE_LIBUTEMPTER
+-	utempter_add_record(ul_pty_get_childfd(ctl.pty), NULL);
+-#endif
+ 
+ 	if (ul_pty_setup(ctl.pty))
+ 		err(EXIT_FAILURE, _("failed to create pseudo-terminal"));
+ 
++#ifdef HAVE_LIBUTEMPTER
++	utempter_add_record(ul_pty_get_childfd(ctl.pty), NULL);
++#endif
++
++	if (ul_pty_signals_setup(ctl.pty))
++		err(EXIT_FAILURE, _("failed to initialize signals handler"));
+ 	fflush(stdout);
+ 
+ 	/*
+-- 
+2.55.0
+
