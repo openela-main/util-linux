@@ -2,7 +2,7 @@
 Summary: A collection of basic system utilities
 Name: util-linux
 Version: 2.37.4
-Release: 28%{?dist}
+Release: 28%{?dist}.1
 License: GPLv2 and GPLv2+ and LGPLv2+ and BSD with advertising and Public Domain
 URL: http://en.wikipedia.org/wiki/Util-linux
 
@@ -253,6 +253,9 @@ Patch86: 0086-libblkid-use-snprintf-instead-of-sprintf.patch
 Patch87: 0087-libfdisk-dos-fix-off-by-one-in-maximum-last-sector-c.patch
 # RHEL-133956 - login-utils: fix setpwnam() buffer use [CVE-2025-14104]
 Patch88: 0088-login-utils-fix-setpwnam-buffer-use-CVE-2025-14104.patch
+
+### RHEL-9.9
+#
 # RHEL-192480 - script: fix use of utempter (utmp registration)
 Patch89: 0089-llib-pty-session-split-PTY-and-signalfd-setup.patch
 Patch90: 0090-script-fix-use-of-utempter.patch
@@ -263,6 +266,10 @@ Patch92: 0092-libblkid-fix-use-after-free-in-nested-partition-prob.patch
 # RHEL-244825 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
 Patch93: 0093-lib-fileutils-add-safe-FD-openat2-helpers.patch
 Patch94: 0094-libmount-pin-the-mount-target-for-non-root-users-CVE.patch
+
+### RHEL-9.9.Z
+# RHEL-283376 - libblkid: dos: validate EBR data and links within extended partition
+Patch95: 0095-libblkid-dos-validate-EBR-data-and-links-within-exte.patch
 
 
 %description
@@ -1101,6 +1108,9 @@ fi
 %{_libdir}/python*/site-packages/libmount/
 
 %changelog
+* Mon Oct 26 2026 Karel Zak <kzak@redhat.com> 2.37.4-28.1
+- fix RHEL-283376 - libblkid: validate EBR data [CVE-2026-53615]
+
 * Mon Sep 14 2026 Karel Zak <kzak@redhat.com> 2.37.4-28
 - fix RHEL-215634 - libblkid: use-after-free in nested partition probing [CVE-2026-13595]
 - fix RHEL-244825 - mount: TOCTOU via ancestor directory swap on target path [CVE-2026-53613]
